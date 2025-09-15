@@ -7,6 +7,11 @@ import StartScreen from './components/StartScreen';
 import PaymentScreen from './components/PaymentScreen';
 import WaitingScreen from './components/WaitingScreen';
 import GameScreen from './components/GameScreen';
+import AchievementSystem from './components/AchievementSystem';
+import MysteryBoxes from './components/MysteryBoxes';
+import LeaderboardSystem from './components/LeaderboardSystem';
+import './styles.css';
+import './components/NewFeatures.css';
 const PAYOUTS = {
   50: { winner: 80 },
   300: { winner: 500 },
@@ -18,10 +23,11 @@ const PAYOUTS = {
 const BET_OPTIONS = Object.keys(PAYOUTS).map(k => ({ amount: parseInt(k, 10), winnings: PAYOUTS[k].winner }));
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL || 'http://localhost:4000';
+const PAYMENT_TIMEOUT = 300; // 5 minutes like Sea Battle
 
 export default function App() {
   const [activeTab, setActiveTab] = useState('Menu');
-  const [gameState, setGameState] = useState('splash');
+  const [gameState, setGameState] = useState('menu');
   const [currentScreen, setCurrentScreen] = useState('menu'); // 'menu', 'start', 'payment', 'waiting', 'game'
   const [socket, setSocket] = useState(null);
   const [socketId, setSocketId] = useState(null);
@@ -38,9 +44,14 @@ export default function App() {
   const [lnurl, setLnurl] = useState('');
   const [addressLocked, setAddressLocked] = useState(false);
 
-  // Payment state
-  const [paymentInfo, setPaymentInfo] = useState(null); // { invoiceId, lightningInvoice, hostedInvoiceUrl, amountSats, amountUSD }
+  // Enhanced Payment state - Sea Battle style
+  const [paymentInfo, setPaymentInfo] = useState(null); // { invoiceId, lightningInvoice, hostedInvoiceUrl, speedInterfaceUrl, amountSats, amountUSD }
   const [isWaitingForPayment, setIsWaitingForPayment] = useState(false);
+  const [lightningInvoice, setLightningInvoice] = useState(null);
+  const [hostedInvoiceUrl, setHostedInvoiceUrl] = useState(null);
+  const [paymentTimer, setPaymentTimer] = useState(300); // 5 minutes like Sea Battle
+  const [payButtonLoading, setPayButtonLoading] = useState(false);
+  const paymentTimerRef = useRef(null);
 
   // Game state
   const [gameId, setGameId] = useState(null);
@@ -79,6 +90,15 @@ export default function App() {
   const matchIntervalRef = useRef(null);
   const [matchSecondsLeft, setMatchSecondsLeft] = useState(null);
 
+  // New addictive features state
+  const [showAchievements, setShowAchievements] = useState(false);
+  const [showMysteryBoxes, setShowMysteryBoxes] = useState(false);
+  const [showLeaderboards, setShowLeaderboards] = useState(false);
+  const [playerSats, setPlayerSats] = useState(0);
+  const [newAchievement, setNewAchievement] = useState(null);
+  const [newMysteryBox, setNewMysteryBox] = useState(null);
+  const [streakBonus, setStreakBonus] = useState(0);
+
   // History
   const [history, setHistory] = useState(() => {
     try { return JSON.parse(localStorage.getItem('ttt_history') || '[]'); } catch { return []; }
@@ -97,131 +117,92 @@ export default function App() {
   }, [history]);
 
   useEffect(() => {
-    const s = io(BACKEND_URL, { transports: ['websocket', 'polling'] });
-    setSocket(s);
+    if (!socket) {
+      const newSocket = io(BACKEND_URL);
+      setSocket(newSocket);
 
-    const handlers = {
-      connect: () => {
-        setSocketId(s.id);
+      newSocket.on('connect', () => {
         setConnected(true);
-      },
-      disconnect: () => {
+        setSocketId(newSocket.id);
+      });
+
+      newSocket.on('disconnect', () => {
         setConnected(false);
-        setMessage('Disconnected. Retrying...');
-      },
-      connect_error: (err) => {
+        setIsWaitingForPayment(false);
+        setPayButtonLoading(false);
+        setLightningInvoice(null);
+        setHostedInvoiceUrl(null);
+      });
+
+      newSocket.on('error', (error) => {
         setConnected(false);
-        setMessage(`Cannot reach server at ${BACKEND_URL}`);
-      },
-      error: (payload) => {
-        const msg = typeof payload === 'string' ? payload : (payload?.message || 'Error');
-        setMessage(msg);
-      },
-      paymentRequest: async ({ lightningInvoice, hostedInvoiceUrl, amountSats, amountUSD, invoiceId, speedInterfaceUrl }) => {
-        const data = { lightningInvoice, hostedInvoiceUrl, amountSats, amountUSD, invoiceId, speedInterfaceUrl };
-        setPaymentInfo(data);
-        setLnurl(lightningInvoice || hostedInvoiceUrl);
-        setQrCode('');
-        setMessage(`Pay ${amountSats} SATS (~$${amountUSD})`);
-        setGameState('awaitingPayment');
-        setCurrentScreen('payment');
+        setMessage(`Failed to connect to server: ${error.message}. Click Retry to try again.`);
+        setIsWaitingForPayment(false);
+        setPayButtonLoading(false);
+        setLightningInvoice(null);
+      });
+
+      newSocket.on('waitingForOpponent', (data) => {
+        setWaitingInfo(data);
+        setCurrentScreen('waiting');
+        setMessage('Waiting for opponent...');
+      });
+
+      // Enhanced payment handling - Sea Battle style
+      newSocket.on('paymentRequest', ({ lightningInvoice, hostedInvoiceUrl, speedInterfaceUrl, amountSats, amountUSD, invoiceId }) => {
+        setLightningInvoice(lightningInvoice);
+        setHostedInvoiceUrl(hostedInvoiceUrl || null);
         setIsWaitingForPayment(true);
+        setPayButtonLoading(false);
+        setPaymentInfo({ 
+          amountUSD, 
+          amountSats,
+          invoiceId,
+          speedInterfaceUrl: speedInterfaceUrl || hostedInvoiceUrl
+        });
+        setPaymentTimer(PAYMENT_TIMEOUT);
+        setMessage(`Pay ${amountSats} SATS (~$${amountUSD})`);
+        setCurrentScreen('payment');
+      });
 
-        // Generate QR code for Lightning invoice
-        if (lightningInvoice) {
-          try {
-            const response = await fetch(`${BACKEND_URL}/api/generate-qr`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ invoice: lightningInvoice })
-            });
-            const qrData = await response.json();
-            if (qrData.qr) {
-              setQrCode(qrData.qr);
-            }
-          } catch (error) {
-            console.error('Failed to generate QR code:', error);
-          }
-        }
+      newSocket.on('paymentVerified', () => {
+        setIsWaitingForPayment(false);
+        setPayButtonLoading(false);
+        setPaymentTimer(PAYMENT_TIMEOUT);
+        setLightningInvoice(null);
+        setHostedInvoiceUrl(null);
+        setMessage('Payment verified! Preparing game...');
+      });
 
-        // Store Speed interface URL if available
-        if (speedInterfaceUrl) {
-          localStorage.setItem('speedInterfaceUrl', speedInterfaceUrl);
-        }
-      },
-      payment_sent: ({ amount, status, txId }) => {
-        setMessage(`Payout sent: ${amount} SATS${txId ? ` (tx: ${txId})` : ''}`);
-      },
-      payment_error: ({ error }) => {
-        setMessage(`Payout error: ${error || 'Unknown error'}`);
-      },
-      paymentVerified: () => {
-        setIsWaitingForPayment(false);
-        setMessage('Payment verified! Waiting for opponent...');
-        setGameState('waiting');
-        setCurrentScreen('waiting');
-      },
-      paymentTimeout: ({ message }) => {
-        // Stop waiting and prompt user to retry
-        setIsWaitingForPayment(false);
-        setPaymentInfo(null);
-        setMessage(message || 'Payment verification timed out. Please try again.');
-        setGameState('splash');
-        setCurrentScreen('start');
-        setWaitingInfo(null);
-        setWaitingSecondsLeft(null);
-        setMatchInfo(null);
-        setMatchSecondsLeft(null);
-        setAddressLocked(false);
-        if (waitingIntervalRef.current) { clearInterval(waitingIntervalRef.current); waitingIntervalRef.current = null; }
-        if (matchIntervalRef.current) { clearInterval(matchIntervalRef.current); matchIntervalRef.current = null; }
-      },
-      paymentStatus: ({ status, message }) => {
-        console.log('Payment status:', status, message);
-        if (status === 'pending' || status === 'unpaid') {
-          setMessage('Payment pending... Please complete the payment');
-        } else if (status === 'error') {
-          setMessage(`Payment check error: ${message || 'Unknown error'}`);
-        }
-      },
-      transaction: ({ message }) => {
-        setMessage(message);
-      },
-      waitingForOpponent: (payload) => {
-        // Start waiting countdown until potential bot spawn or human arrival
-        const { message, estimatedWait, playersInGame } = payload || {};
-        setGameState('waiting');
-        setCurrentScreen('waiting');
-        setMessage(message || 'Finding opponent...');
-        
-        // Parse estimated wait time (e.g., "13-25 seconds")
-        if (estimatedWait) {
-          const match = estimatedWait.match(/(\d+)-(\d+)/);
-          if (match) {
-            const minWait = parseInt(match[1]);
-            const maxWait = parseInt(match[2]);
-            setWaitingInfo({ minWait, maxWait, estimatedWait });
-            // Start countdown from max wait time
-            setWaitingSecondsLeft(maxWait);
-            
-            if (waitingIntervalRef.current) { 
-              clearInterval(waitingIntervalRef.current); 
-            }
-            
-            const startTime = Date.now();
-            waitingIntervalRef.current = setInterval(() => {
-              const elapsed = Math.floor((Date.now() - startTime) / 1000);
-              const remaining = Math.max(0, maxWait - elapsed);
-              setWaitingSecondsLeft(remaining);
-            }, 1000);
+      newSocket.on('message', (data) => {
+        setMessage(data);
+        const match = data.match(/wait time: (\d+)-(\d+) seconds/);
+        if (match) {
+          const minWait = parseInt(match[1]);
+          const maxWait = parseInt(match[2]);
+          const estimatedWait = Math.floor((minWait + maxWait) / 2);
+          setWaitingInfo({ minWait, maxWait, estimatedWait });
+          // Start countdown from max wait time
+          setWaitingSecondsLeft(maxWait);
+          
+          if (waitingIntervalRef.current) { 
+            clearInterval(waitingIntervalRef.current); 
           }
+          
+          const startTime = Date.now();
+          waitingIntervalRef.current = setInterval(() => {
+            const elapsed = Math.floor((Date.now() - startTime) / 1000);
+            const remaining = Math.max(0, maxWait - elapsed);
+            setWaitingSecondsLeft(remaining);
+          }, 1000);
         } else {
           setWaitingInfo(null);
           setWaitingSecondsLeft(null);
         }
         setMatchInfo(null);
-      },
-      matchFound: ({ opponent, startsIn, startAt }) => {
+      });
+
+      newSocket.on('matchFound', ({ opponent, startsIn, startAt }) => {
         // Switch to pre-game countdown
         if (waitingIntervalRef.current) { clearInterval(waitingIntervalRef.current); waitingIntervalRef.current = null; }
         setWaitingInfo(null);
@@ -240,8 +221,9 @@ export default function App() {
         };
         tick();
         matchIntervalRef.current = setInterval(tick, 250);
-      },
-      startGame: ({ gameId, symbol, turn, message, turnDeadline }) => {
+      });
+
+      newSocket.on('startGame', ({ gameId, symbol, turn, message, turnDeadline }) => {
         // Clear waiting/match timers on actual game start
         if (waitingIntervalRef.current) { clearInterval(waitingIntervalRef.current); waitingIntervalRef.current = null; }
         if (matchIntervalRef.current) { clearInterval(matchIntervalRef.current); matchIntervalRef.current = null; }
@@ -261,34 +243,42 @@ export default function App() {
         setGameState('playing');
         setCurrentScreen('game');
         setShowStartModal(false);
-        setMessage(message || (turn === s.id ? 'Your move' : "Opponent's move"));
-      },
-      boardUpdate: ({ board, lastMove }) => {
+        setMessage(message || (turn === socketId ? 'Your move' : "Opponent's move"));
+      });
+
+      newSocket.on('boardUpdate', ({ board, lastMove }) => {
         setBoard(board);
         setLastMove(typeof lastMove === 'number' ? lastMove : null);
-      },
-      moveMade: ({ position, symbol, nextTurn, board, turnDeadline, message }) => {
+      });
+
+      newSocket.on('moveMade', ({ position, symbol, nextTurn, board, turnDeadline, message }) => {
         setBoard(board);
         setLastMove(position);
         setTurn(nextTurn);
         setTurnDeadline(turnDeadline || null);
         const ttl = turnDeadline ? Math.max(1, Math.ceil((Number(turnDeadline) - Date.now()) / 1000)) : null;
         setTurnDuration(ttl);
-        setMessage(message || (nextTurn === s.id ? 'Your move' : "Opponent's move"));
-      },
-      nextTurn: ({ turn, turnDeadline, message }) => {
+        setMessage(message || (nextTurn === socketId ? 'Your move' : "Opponent's move"));
+      });
+
+      newSocket.on('nextTurn', ({ turn, turnDeadline, message }) => {
         setTurn(turn);
         setTurnDeadline(turnDeadline || null);
         const ttl = turnDeadline ? Math.max(1, Math.ceil((Number(turnDeadline) - Date.now()) / 1000)) : null;
         setTurnDuration(ttl);
-        setMessage(message || (turn === s.id ? 'Your move' : "Opponent's move"));
-      },
-      gameEnd: ({ message, winnerSymbol, winningLine }) => {
+        setMessage(message || (turn === socketId ? 'Your move' : "Opponent's move"));
+      });
+
+      newSocket.on('gameEnd', ({ message, winnerSymbol, winningLine, streakBonus: bonus }) => {
         setGameState('finished');
         setMessage(message);
         setWinningLine(Array.isArray(winningLine) ? winningLine : null);
         setTurnDeadline(null);
         setTimeLeft(null);
+        if (bonus) {
+          setStreakBonus(bonus);
+          setTimeout(() => setStreakBonus(0), 5000);
+        }
         // Save to history
         const isWin = !!(winnerSymbol && symbol && winnerSymbol === symbol);
         const isDraw = winnerSymbol == null;
@@ -312,407 +302,240 @@ export default function App() {
           sfxPlay('lose');
           triggerHaptic([15, 25]);
         }
-      }
-    };
+      });
 
-    Object.entries(handlers).forEach(([evt, fn]) => s.on(evt, fn));
-    s.connect();
+      // New addictive features events
+      newSocket.on('newAchievement', ({ achievement, reward }) => {
+        setNewAchievement({ achievement, reward });
+        setTimeout(() => setNewAchievement(null), 5000);
+      });
 
-    return () => {
-      Object.entries(handlers).forEach(([evt, fn]) => s.off(evt, fn));
-      s.disconnect();
-      if (waitingIntervalRef.current) { clearInterval(waitingIntervalRef.current); waitingIntervalRef.current = null; }
-      if (matchIntervalRef.current) { clearInterval(matchIntervalRef.current); matchIntervalRef.current = null; }
-    };
-  }, [BACKEND_URL, betAmount, history]);
+      newSocket.on('mysteryBoxAwarded', ({ boxType, reason }) => {
+        setNewMysteryBox({ boxType, reason });
+        setTimeout(() => setNewMysteryBox(null), 5000);
+      });
 
-  const handleJoinGame = async () => {
-    // Auto-format Lightning address if needed
-    let formattedAddress = lightningAddress.trim();
-    if (formattedAddress && !formattedAddress.includes('@')) {
-      formattedAddress = `${formattedAddress}@speed.app`;
-    }
+      newSocket.on('playerStatsUpdate', ({ sats, stats }) => {
+        setPlayerSats(sats || 0);
+      });
 
-    if (!formattedAddress || !formattedAddress.includes('@')) {
-      alert('Please enter a valid Lightning address (e.g., username or username@speed.app)');
-      return;
-    }
-    if (!betAmount) {
-      alert('Please select a bet amount');
-      return;
-    }
-
-    // Check for Speed auth token and fetch Lightning address if available
-    const authToken = localStorage.getItem('speedAuthToken');
-    if (authToken && !lightningAddress) {
-      try {
-        const response = await fetch(`${BACKEND_URL}/api/get-lightning-address`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ authToken })
-        });
-        const data = await response.json();
-        if (data.lightningAddress) {
-          setLightningAddress(data.lightningAddress);
-          setAcctId(data.acctId);
-          formattedAddress = data.lightningAddress;
+      return () => {
+        newSocket.disconnect();
+        if (paymentTimerRef.current) {
+          clearTimeout(paymentTimerRef.current);
         }
-      } catch (error) {
-        console.error('Failed to fetch Lightning address:', error);
-      }
+      };
     }
+  }, []);
 
-    socket.emit('joinGame', { 
-      betAmount: parseInt(betAmount, 10), 
-      lightningAddress: formattedAddress,
-      acctId: acctId || localStorage.getItem('speedAcctId')
-    });
-    localStorage.setItem('ttt_lastBet', String(betAmount));
-    localStorage.setItem('ttt_lightningAddress', formattedAddress || '');
-    localStorage.setItem('ttt_lastAddress', formattedAddress || '');
-    setAddressLocked(true);
-    setCurrentScreen('payment');
-  };
-
-
-  // Sea Battle style - payment verification only via webhooks
-
-  const onCellClick = (idx) => {
-    if (gameState !== 'playing') return;
-    if (turn !== socketId) return; // not your turn
-    if (board[idx] !== null) return;
-    sfxPlay('move');
-    triggerHaptic(10);
-    socket.emit('makeMove', { gameId, position: idx });
-  };
-
-  const resetToMenu = () => {
-    setGameState('splash');
-    setCurrentScreen('menu');
-    setActiveTab('Menu');
-    setMessage('');
-    setBoard(Array(9).fill(null));
-    setLastMove(null);
-    setWinningLine(null);
-    setTurnDeadline(null);
-    setTimeLeft(null);
-    setPaymentInfo(null);
-    setIsWaitingForPayment(false);
-    if (waitingIntervalRef.current) { clearInterval(waitingIntervalRef.current); waitingIntervalRef.current = null; }
-    if (matchIntervalRef.current) { clearInterval(matchIntervalRef.current); matchIntervalRef.current = null; }
-    setWaitingInfo(null);
-    setWaitingSecondsLeft(null);
-    setMatchInfo(null);
-    setMatchSecondsLeft(null);
-    setAcceptedTerms(false);
-    // defaults 50 -> 80
-    setBetAmount('50');
-    setPayoutAmount('80');
-    setShowHowToModal(false);
-    setShowStartModal(false);
-    setShowSupportModal(false);
-    setAddressLocked(false);
-  };
-
+  // Update payout when bet changes
   useEffect(() => {
     const opt = BET_OPTIONS.find(o => o.amount === parseInt(betAmount, 10));
     setPayoutAmount(String(opt?.winnings || 0));
   }, [betAmount]);
 
-  // Persist toggles
-  useEffect(() => { localStorage.setItem('ttt_sfx', sfxEnabled ? '1' : '0'); }, [sfxEnabled]);
-  useEffect(() => { localStorage.setItem('ttt_haptics', hapticsEnabled ? '1' : '0'); }, [hapticsEnabled]);
-  useEffect(() => { localStorage.setItem('ttt_tilt', tiltEnabled ? '1' : '0'); }, [tiltEnabled]);
-  useEffect(() => { localStorage.setItem('ttt_theme', theme); }, [theme]);
-
-  // Autofill Lightning username from URL (#p_add=user@speed.app or ?p_add=)
+  // Payment timer effect - Sea Battle style
   useEffect(() => {
-    try {
-      const hash = window.location.hash.substring(1);
-      const hashParams = new URLSearchParams(hash);
-      const urlParams = new URLSearchParams(window.location.search);
-      const pAdd = hashParams.get('p_add') || urlParams.get('p_add');
-      if (pAdd) {
-        const username = pAdd.split('@')[0].trim();
-        setLightningAddress(username);
-        if (username) setAddressLocked(true);
-        localStorage.setItem('ttt_lightningAddress', username);
-        localStorage.setItem('ttt_lastAddress', username);
-      } else if (!lightningAddress) {
-        const last = localStorage.getItem('ttt_lastAddress');
-        if (last) setLightningAddress(last);
+    if (isWaitingForPayment && paymentTimer > 0) {
+      paymentTimerRef.current = setTimeout(() => {
+        setPaymentTimer(paymentTimer - 1);
+      }, 1000);
+    } else if (isWaitingForPayment && paymentTimer === 0) {
+      setIsWaitingForPayment(false);
+      setPayButtonLoading(false);
+      setMessage('Payment timed out after 5 minutes. Click Retry to try again.');
+      setLightningInvoice(null);
+      setHostedInvoiceUrl(null);
+      setPaymentInfo(null);
+      socket?.emit('cancelGame', { gameId, socketId });
+    }
+    return () => {
+      if (paymentTimerRef.current) {
+        clearTimeout(paymentTimerRef.current);
       }
-    } catch {}
-  }, []);
+    };
+  }, [isWaitingForPayment, paymentTimer, gameId, socketId, socket]);
 
-  // Countdown timer for current turn
+  // Persist toggles
   useEffect(() => {
-    if (!turnDeadline || gameState !== 'playing') {
-      setTimeLeft(null);
+    localStorage.setItem('ttt_sfx', sfxEnabled ? '1' : '0');
+    localStorage.setItem('ttt_haptics', hapticsEnabled ? '1' : '0');
+    localStorage.setItem('ttt_tilt', tiltEnabled ? '1' : '0');
+  }, [sfxEnabled, hapticsEnabled, tiltEnabled]);
+
+  // Fetch player stats when connected
+  useEffect(() => {
+    if (connected && lightningAddress && socket) {
+      socket.emit('requestPlayerStats', { lightningAddress });
+    }
+  }, [connected, lightningAddress, socket]);
+  useEffect(() => { localStorage.setItem('ttt_tilt', tiltEnabled ? '1' : '0'); }, [tiltEnabled]);
+  useEffect(() => { 
+    localStorage.setItem('ttt_theme', theme);
+    // Apply theme to body element
+    document.body.className = theme !== 'simple' ? `theme-${theme}` : 'theme-simple';
+  }, [theme]);
+
+  // Game join handler
+  const handleJoinGame = () => {
+    console.log('handleJoinGame called');
+    console.log('Socket:', socket, 'Connected:', connected);
+    console.log('Lightning Address:', lightningAddress);
+    console.log('Accepted Terms:', acceptedTerms);
+    console.log('Bet Amount:', betAmount);
+    
+    if (!socket || !connected) {
+      setMessage('Not connected to server');
+      console.log('Not connected to server');
       return;
     }
-    const update = () => {
-      const ms = Math.max(0, Number(turnDeadline) - Date.now());
-      setTimeLeft(Math.ceil(ms / 1000));
-    };
-    update();
-    const t = setInterval(update, 250);
-    return () => clearInterval(t);
-  }, [turnDeadline, gameState]);
+    
+    if (!lightningAddress) {
+      setMessage('Please enter your Lightning address');
+      console.log('Lightning address missing');
+      return;
+    }
 
-  const doResign = () => {
-    if (!socket || !gameId) return;
-    socket.emit('resign', { gameId });
-    sfxPlay('resign');
-    triggerHaptic([20, 30, 20]);
+    if (!acceptedTerms) {
+      setMessage('Please accept the terms and conditions');
+      console.log('Terms not accepted');
+      return;
+    }
+
+    // Emit join game event
+    console.log('Emitting joinGame event');
+    socket?.emit('joinGame', { lightningAddress: addr, betAmount: parseInt(betAmount, 10), acctId });
+    setPayButtonLoading(true);
+
+    setMessage('Joining game...');
+    setAddressLocked(true);
   };
 
-  const copyPayment = async () => {
+  // Sea Battle style payment URL opener
+  const openPaymentUrlSafely = (url) => {
     try {
-      if (!paymentInfo) return;
-      const text = paymentInfo.lightningInvoice || paymentInfo.hostedInvoiceUrl || '';
-      if (!text) return;
-      await navigator.clipboard.writeText(text);
-      setMessage('Payment request copied to clipboard');
-    } catch (e) {
-      setMessage('Copy failed');
-    }
-  };
-
-  // Audio & Haptics
-  const ensureAudioCtx = () => {
-    if (!audioCtxRef.current) {
-      const AC = window.AudioContext || window.webkitAudioContext;
-      if (AC) audioCtxRef.current = new AC();
-    }
-    return audioCtxRef.current;
-  };
-
-  const tone = (ctx, { freq = 600, time = 0, dur = 0.08, type = 'sine', gain = 0.08 }) => {
-    const osc = ctx.createOscillator();
-    const g = ctx.createGain();
-    osc.type = type; osc.frequency.value = freq;
-    osc.connect(g); g.connect(ctx.destination);
-    const t0 = ctx.currentTime + time;
-    g.gain.setValueAtTime(0.0001, t0);
-    g.gain.linearRampToValueAtTime(gain, t0 + 0.01);
-    g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
-    osc.start(t0); osc.stop(t0 + dur + 0.02);
-  };
-
-  const sfxPlay = (name) => {
-    if (!sfxEnabled) return;
-    const ctx = ensureAudioCtx();
-    if (!ctx) return;
-    if (name === 'move') {
-      tone(ctx, { freq: 740, dur: 0.06, type: 'triangle', gain: 0.06 });
-    } else if (name === 'win') {
-      tone(ctx, { freq: 523, dur: 0.10, type: 'sine', gain: 0.06 });
-      tone(ctx, { freq: 659, time: 0.10, dur: 0.10, type: 'sine', gain: 0.06 });
-      tone(ctx, { freq: 784, time: 0.20, dur: 0.12, type: 'sine', gain: 0.06 });
-    } else if (name === 'lose') {
-      tone(ctx, { freq: 440, dur: 0.12, type: 'sawtooth', gain: 0.05 });
-      tone(ctx, { freq: 330, time: 0.10, dur: 0.14, type: 'sawtooth', gain: 0.05 });
-    } else if (name === 'resign') {
-      tone(ctx, { freq: 300, dur: 0.12, type: 'square', gain: 0.05 });
-      tone(ctx, { freq: 220, time: 0.10, dur: 0.16, type: 'square', gain: 0.05 });
-    }
-  };
-
-  const triggerHaptic = (pattern) => {
-    try { if (hapticsEnabled && navigator.vibrate) navigator.vibrate(pattern); } catch {}
-  };
-
-  const shareResult = async () => {
-    if (gameState !== 'finished') return;
-    const last = history[0];
-    const text = last ? `I just ${last.outcome === 'win' ? 'won' : 'played'} ${Math.abs(last.amount)} SATS in Tic‑Tac‑Toe!` : 'Play Tic‑Tac‑Toe with SATS!';
-    try {
-      if (navigator.share) {
-        await navigator.share({ title: 'Tic‑Tac‑Toe', text, url: window.location.origin });
-      } else {
-        await navigator.clipboard.writeText(`${text} ${window.location.origin}`);
-        setMessage('Share text copied to clipboard');
+      const preWin = window.open('', '_blank', 'noopener,noreferrer');
+      if (preWin) {
+        preWin.location.href = url;
+        return true;
       }
-    } catch {}
+      return false;
+    } catch (e) {
+      try {
+        window.location.href = url;
+        return true;
+      } catch (e2) {
+        return false;
+      }
+    }
   };
 
-  // 3D Tilt handlers
-  const handleBoardPointer = (e) => {
-    if (!tiltEnabled || !boardRef.current) return;
-    const rect = boardRef.current.getBoundingClientRect();
-    const x = (e.clientX - rect.left) / rect.width; // 0..1
-    const y = (e.clientY - rect.top) / rect.height; // 0..1
-    const ry = (x - 0.5) * 8; // deg
-    const rx = -(y - 0.5) * 8;
-    boardRef.current.style.setProperty('--rx', rx.toFixed(2) + 'deg');
-    boardRef.current.style.setProperty('--ry', ry.toFixed(2) + 'deg');
-  };
-  const resetBoardTilt = () => {
-    if (!boardRef.current) return;
-    boardRef.current.style.setProperty('--rx', '0deg');
-    boardRef.current.style.setProperty('--ry', '0deg');
+  // Sea Battle style payment handler
+  const handlePay = () => {
+    const paymentUrl = paymentInfo?.speedInterfaceUrl || hostedInvoiceUrl;
+    
+    if (paymentUrl) {
+      const opened = openPaymentUrlSafely(paymentUrl);
+      if (opened) {
+        setPayButtonLoading(true);
+      } else {
+        setPayButtonLoading(false);
+        setMessage('We could not open the payment page automatically. Please use the "Open Invoice" link below or scan the QR code.');
+      }
+    } else {
+      setMessage('No payment URL available. Please scan the QR code to pay.');
+    }
   };
 
-  // Simple canvas confetti on win
+  // Sea Battle style cancel game handler
+  const handleCancelGame = () => {
+    if (socket) {
+      socket.emit('cancelGame', { gameId: gameId || null, socketId: socketId || null });
+    }
+    
+    if (paymentTimerRef.current) {
+      clearTimeout(paymentTimerRef.current);
+      paymentTimerRef.current = null;
+    }
+    
+    setGameState('menu');
+    setCurrentScreen('menu');
+    setMessage('Game canceled.');
+    setLightningInvoice(null);
+    setHostedInvoiceUrl(null);
+    setIsWaitingForPayment(false);
+    setPayButtonLoading(false);
+    setPaymentTimer(PAYMENT_TIMEOUT);
+    setPaymentInfo(null);
+  };
+
   const launchConfetti = () => {
-    try {
-      const host = confettiRef.current || document.body;
-      const canvas = document.createElement('canvas');
-      const dpr = window.devicePixelRatio || 1;
-      const w = window.innerWidth;
-      const h = window.innerHeight;
-      canvas.width = w * dpr;
-      canvas.height = h * dpr;
-      canvas.style.width = w + 'px';
-      canvas.style.height = h + 'px';
-      canvas.style.position = 'fixed';
-      canvas.style.left = '0';
-      canvas.style.top = '0';
-      canvas.style.pointerEvents = 'none';
-      canvas.style.zIndex = '9999';
+    if (confettiRef.current) {
+      const canvas = confettiRef.current;
       const ctx = canvas.getContext('2d');
-      ctx.scale(dpr, dpr);
-      host.appendChild(canvas);
-
-      const colors = ['#60a5fa', '#f59e0b', '#22c55e', '#e879f9', '#f43f5e'];
-      const N = 120;
-      const particles = Array.from({ length: N }).map(() => ({
-        x: w / 2 + (Math.random() - 0.5) * 80,
-        y: h / 2 + (Math.random() - 0.5) * 40,
-        r: 3 + Math.random() * 4,
-        c: colors[(Math.random() * colors.length) | 0],
-        vx: (Math.random() - 0.5) * 6,
-        vy: -Math.random() * 6 - 2,
-        g: 0.12 + Math.random() * 0.08,
-        a: 1,
-        life: 60 + (Math.random() * 40)
-      }));
-
-      let frame = 0;
-      const tick = () => {
-        frame++;
-        ctx.clearRect(0, 0, w, h);
-        particles.forEach(p => {
+      const particles = [];
+      
+      for (let i = 0; i < 50; i++) {
+        particles.push({
+          x: Math.random() * canvas.width,
+          y: Math.random() * canvas.height,
+          vx: (Math.random() - 0.5) * 4,
+          vy: (Math.random() - 0.5) * 4,
+          color: `hsl(${Math.random() * 360}, 70%, 60%)`,
+          life: 60
+        });
+      }
+      
+      const animate = () => {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        particles.forEach((p, i) => {
           p.x += p.vx;
           p.y += p.vy;
-          p.vy += p.g;
-          p.a *= 0.992;
+          p.vy += 0.1;
           p.life--;
-          ctx.globalAlpha = Math.max(0, p.a);
-          ctx.fillStyle = p.c;
-          ctx.beginPath();
-          ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
-          ctx.fill();
+          ctx.fillStyle = p.color;
+          ctx.fillRect(p.x, p.y, 4, 4);
+          if (p.life <= 0) particles.splice(i, 1);
         });
-        if (frame < 180) requestAnimationFrame(tick); else host.removeChild(canvas);
+        if (particles.length > 0) requestAnimationFrame(animate);
       };
-      tick();
-    } catch {}
-  };
-
-  // Circular timer progress ring
-  function TimerRing({ progress, size = 54 }) {
-    const stroke = 6;
-    const r = (size - stroke) / 2;
-    const c = 2 * Math.PI * r;
-    const clamped = Math.max(0, Math.min(1, progress ?? 0));
-    const dash = c * clamped;
-    return (
-      <svg className="timer-ring" width={size} height={size} viewBox={`0 0 ${size} ${size}`} aria-hidden="true">
-        <defs>
-          <linearGradient id="ringGrad" x1="0" y1="0" x2="1" y2="1">
-            <stop offset="0%" stopColor="#60a5fa" />
-            <stop offset="100%" stopColor="#f59e0b" />
-          </linearGradient>
-        </defs>
-        <circle cx={size/2} cy={size/2} r={r} stroke="rgba(148,163,184,0.25)" strokeWidth={stroke} fill="none" />
-        <circle cx={size/2} cy={size/2} r={r} stroke="url(#ringGrad)" strokeWidth={stroke} fill="none" strokeDasharray={`${c}`} strokeDashoffset={`${c - dash}`} strokeLinecap="round" transform={`rotate(-90 ${size/2} ${size/2})`} />
-      </svg>
-    );
-  }
-
-  const turnProgress = (typeof timeLeft === 'number' && typeof turnDuration === 'number' && turnDuration > 0)
-    ? Math.max(0, Math.min(1, timeLeft / turnDuration))
-    : null;
-
-  // Swipe gestures for tab switching
-  const modalOpen = showSettings || showStartModal || showHowToModal || showSupportModal;
-  const handleTouchStart = (e) => {
-    if (modalOpen || !e.touches?.length) return;
-    const t = e.touches[0];
-    touchStartRef.current = { x: t.clientX, y: t.clientY, t: Date.now() };
-  };
-  const handleTouchEnd = (e) => {
-    if (modalOpen || !touchStartRef.current || !e.changedTouches?.length) return;
-    const start = touchStartRef.current;
-    touchStartRef.current = null;
-    const t = e.changedTouches[0];
-    const dx = t.clientX - start.x;
-    const dy = t.clientY - start.y;
-    if (Math.abs(dx) > 55 && Math.abs(dx) > Math.abs(dy)) {
-      if (dx < 0 && activeTab === 'Menu') setActiveTab('History');
-      else if (dx > 0 && activeTab === 'History') setActiveTab('Menu');
+      animate();
     }
   };
 
-  // Keyboard shortcuts (Menu): 1=Start, 2=HowTo, 3=Support
-  useEffect(() => {
-    const onKey = (e) => {
-      if (modalOpen || activeTab !== 'Menu') return;
-      if (e.code === 'Digit1') setShowStartModal(true);
-      else if (e.code === 'Digit2') setShowHowToModal(true);
-      else if (e.code === 'Digit3') setShowSupportModal(true);
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [modalOpen, activeTab]);
+  const resetToMenu = () => {
+    setCurrentScreen('menu');
+    setGameState('menu');
+    setMessage('');
+    setIsWaitingForPayment(false);
+    setPayButtonLoading(false);
+    setLightningInvoice(null);
+    setHostedInvoiceUrl(null);
+    setPaymentInfo(null);
+    setAddressLocked(false);
+  };
+
+  const copyPayment = () => {
+    if (lightningInvoice) {
+      navigator.clipboard.writeText(lightningInvoice);
+      setMessage('Payment request copied to clipboard!');
+    }
+  };
 
   return (
-    <div className={`app theme-${theme}`} onTouchStart={handleTouchStart} onTouchEnd={handleTouchEnd}>
-      <header className="app-header">
-        <div className="brand">
-          <div className="brand-mark" aria-hidden>⚡</div>
-          <h1 className="brand-title">Tic‑Tac‑Toe</h1>
+    <div className={`app ${theme}`}>
+      <canvas ref={confettiRef} className="confetti" />
+      
+      {currentScreen === 'menu' && (
+        <div className="menu-screen">
+          <h1>Lightning Tic-Tac-Toe</h1>
+          <button onClick={() => setCurrentScreen('start')}>Start Game</button>
+          <button onClick={() => setCurrentScreen('practice')}>Practice</button>
         </div>
-        <div className="header-actions">
-          <button className="neo-btn small" onClick={() => setShowSettings(true)} aria-label="Open settings">⚙️ Settings</button>
-        </div>
-      </header>
-      <div className="tabs neo-tabs">
-        {['Menu','History'].map(t => (
-          <button key={t} className={activeTab===t? 'active':''} onClick={()=>setActiveTab(t)}>{t}</button>
-        ))}
-      </div>
+      )}
 
-      {activeTab === 'Menu' && currentScreen === 'menu' && (
-        <div className="menu-page">
-          <div className="menu-center">
-          <div className="cta-col">
-            <div className="cta-item">
-              <button
-                className="neo-btn cta-main primary"
-                onClick={() => setCurrentScreen('start')}
-                disabled={gameState==='playing'}
-                aria-label={`Start Game — Win ${payoutAmount} SATS`}
-              >Start Game</button>
-            </div>
-            <div className="cta-item">
-              <button
-                className="neo-btn cta-secondary"
-                onClick={() => setShowHowToModal(true)}
-                aria-label="How to Play — Rules and tips"
-              >How to Play</button>
-            </div>
-            <div className="cta-item">
-              <button
-                className="neo-btn cta-main outline"
-                onClick={() => setShowSupportModal(true)}
-                aria-label="Contact Support on Telegram"
-              >Contact Support</button>
-            </div>
-          </div>
-          </div>
+      {currentScreen === 'practice' && (
+        <div className="practice-screen">
           <PracticeBoard />
         </div>
       )}
@@ -725,7 +548,7 @@ export default function App() {
           setBetAmount={setBetAmount}
           acceptedTerms={acceptedTerms}
           setAcceptedTerms={setAcceptedTerms}
-          onStart={handleJoinGame}
+          onStart={handleStartGame}
           connected={connected}
           onOpenTerms={() => setShowTerms(true)}
           onOpenPrivacy={() => setShowPrivacy(true)}
@@ -735,13 +558,64 @@ export default function App() {
       )}
 
       {currentScreen === 'payment' && (
-        <PaymentScreen
-          paymentInfo={paymentInfo}
-          message={message}
-          onCopyPayment={copyPayment}
-          onCancel={resetToMenu}
-          qrCode={qrCode}
-        />
+        <div className="payment-screen">
+          <div className="payment-container">
+            <h2>Payment Required</h2>
+            <p className="payment-message">{message}</p>
+            
+            {isWaitingForPayment && (
+              <div className="payment-timer">
+                <p>Payment expires in: {Math.floor(paymentTimer / 60)}:{String(paymentTimer % 60).padStart(2, '0')}</p>
+              </div>
+            )}
+            
+            {lightningInvoice && (
+              <div className="payment-details">
+                <div className="qr-section">
+                  <QRCodeSVG value={lightningInvoice} size={200} />
+                </div>
+                
+                <div className="payment-buttons">
+                  <button 
+                    className="pay-button primary" 
+                    onClick={handlePay}
+                    disabled={payButtonLoading}
+                  >
+                    {payButtonLoading ? 'Opening...' : 'Pay with Lightning'}
+                  </button>
+                  
+                  {(paymentInfo?.speedInterfaceUrl || hostedInvoiceUrl) && (
+                    <a 
+                      href={paymentInfo?.speedInterfaceUrl || hostedInvoiceUrl}
+                      target="_blank" 
+                      rel="noopener noreferrer"
+                      className="invoice-link"
+                    >
+                      Open Invoice
+                    </a>
+                  )}
+                  
+                  <button className="copy-button secondary" onClick={copyPayment}>
+                    Copy Invoice
+                  </button>
+                </div>
+                
+                <div className="payment-info">
+                  {paymentInfo && (
+                    <>
+                      <p>Amount: {paymentInfo.amountSats} SATS</p>
+                      <p>~${paymentInfo.amountUSD} USD</p>
+                    </>
+                  )}
+                </div>
+              </div>
+            )}
+            
+            <button className="cancel-button" onClick={handleCancelGame}>
+              Cancel Game
+            </button>
+          </div>
+        </div>
       )}
 
       {currentScreen === 'waiting' && (
@@ -778,8 +652,21 @@ export default function App() {
       )}
 
 
-      {activeTab === 'History' && (
-        <div className="panel neo-panel glass">
+      {currentScreen === 'history' && (
+        <div className="panel neo-panel glass full-screen-panel">
+          <div className="screen-header">
+            <button 
+              className="back-btn neo-btn"
+              onClick={() => {
+                setCurrentScreen('menu');
+                setActiveTab('Menu');
+              }}
+            >
+              ← Back to Menu
+            </button>
+            <h2>Game History</h2>
+          </div>
+          
           <div className="stats-chips" aria-label="Your stats">
             <span className="chip">Wins: {stats.wins}</span>
             <span className="chip">Losses: {stats.losses}</span>
@@ -787,23 +674,104 @@ export default function App() {
             <span className="chip">Streak: {stats.streak}</span>
             <span className="chip">Net: {stats.net} SATS</span>
           </div>
-          <h3>Recent Games</h3>
-          {history.length === 0 ? (
-            <p>No games yet.</p>
-          ) : (
-            <ul className="history">
-              {history.map(h => (
-                <li key={h.id}>
-                  <span>{new Date(h.ts).toLocaleString()}</span>
-                  <span>Bet: {h.bet}</span>
-                  <span>{h.outcome === 'win' ? '+': ''}{h.amount} SATS</span>
-                </li>
-              ))}
-            </ul>
-          )}
+          
+          <div className="history-content">
+            <h3>Recent Games</h3>
+            {history.length === 0 ? (
+              <div className="empty-state">
+                <p>No games yet.</p>
+                <p>Start playing to build your game history!</p>
+              </div>
+            ) : (
+              <ul className="history">
+                {history.map(h => (
+                  <li key={h.id} className={`history-item outcome-${h.outcome}`}>
+                    <div className="game-info">
+                      <span className="game-date">{new Date(h.ts).toLocaleString()}</span>
+                      <span className="game-outcome">{h.outcome.toUpperCase()}</span>
+                    </div>
+                    <div className="game-details">
+                      <span className="game-bet">Bet: {h.bet} SATS</span>
+                      <span className={`game-amount ${h.amount >= 0 ? 'positive' : 'negative'}`}>
+                        {h.amount >= 0 ? '+' : ''}{h.amount} SATS
+                      </span>
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
         </div>
       )}
       <div ref={confettiRef} className="confetti-layer" />
+
+      {/* Achievement Notification */}
+      {newAchievement && (
+        <div className="achievement-notification">
+          <div className="achievement-content">
+            <span className="achievement-icon">🏆</span>
+            <div className="achievement-text">
+              <h4>Achievement Unlocked!</h4>
+              <p>{newAchievement.achievement.name}</p>
+              <span className="reward">+{newAchievement.reward} sats</span>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Mystery Box Notification */}
+      {newMysteryBox && (
+        <div className="mysterybox-notification">
+          <div className="mysterybox-content">
+            <span className="mysterybox-icon">🎁</span>
+            <div className="mysterybox-text">
+              <h4>Mystery Box Earned!</h4>
+              <p>{newMysteryBox.boxType} Box</p>
+              <span className="reason">{newMysteryBox.reason}</span>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Streak Bonus Notification */}
+      {streakBonus > 0 && (
+        <div className="streak-notification">
+          <div className="streak-content">
+            <span className="streak-icon">🔥</span>
+            <div className="streak-text">
+              <h4>Streak Bonus!</h4>
+              <p>+{streakBonus} sats bonus</p>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Feature Modals */}
+      {showAchievements && (
+        <AchievementSystem 
+          lightningAddress={lightningAddress}
+          isOpen={showAchievements}
+          onClose={() => setShowAchievements(false)}
+          socket={socket}
+        />
+      )}
+      
+      {showMysteryBoxes && (
+        <MysteryBoxes 
+          lightningAddress={lightningAddress}
+          isOpen={showMysteryBoxes}
+          onClose={() => setShowMysteryBoxes(false)}
+          socket={socket}
+        />
+      )}
+      
+      {showLeaderboards && (
+        <LeaderboardSystem 
+          lightningAddress={lightningAddress}
+          isOpen={showLeaderboards}
+          onClose={() => setShowLeaderboards(false)}
+        />
+      )}
 
       {showSettings && (
         <div className="modal-backdrop" onClick={() => setShowSettings(false)}>
@@ -831,20 +799,208 @@ export default function App() {
 
       {showHowToModal && (
         <div className="modal-backdrop" onClick={() => setShowHowToModal(false)}>
-          <div className="modal" onClick={(e) => e.stopPropagation()}>
-            <h3>How to Play</h3>
-            <div className="section">
-              <p className="fun-intro">Rule #1: Be X-ceptional. Rule #2: Be O-pen to genius moves. Rule #3: Don’t time out!</p>
-              <ol>
-                <li>Join & Pay: Enter your Speed username (e.g., yourname) and choose a bet. You’ll get a Lightning invoice and a same-page payment window. Pay to enter.</li>
-                <li>Matchmaking: We search for a real player for 13–25 seconds. If none joins, we’ll match you with a clearly disclosed bot. Either way, you’ll see “Opponent found” and a 5→1 countdown.</li>
-                <li>Turns & Timers: First move has up to 8 seconds; every move after that has 5 seconds. If a game ends in a draw, the opponent starts next game with a 5-second timer.</li>
-                <li>Winning: Classic 3-in-a-row rules. If you win, payouts are sent instantly to your Lightning address per the bet’s winnings.</li>
-                <li>Payments & Payouts: Bets are in SATS. Payouts are automatic to your provided Lightning address via Speed Wallet. We log payout confirmations for support.</li>
-              </ol>
+          <div className="modal how-to-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <h3>🎯 How to Play: Your Guide to Bitcoin-Powered Tic-Tac-Toe Mastery</h3>
+              <p className="subtitle">Because apparently, regular tic-tac-toe wasn't stressful enough without money involved 💸</p>
             </div>
-            <div style={{ display:'flex', justifyContent:'flex-end' }}>
-              <button className="neo-btn" onClick={() => setShowHowToModal(false)}>Close</button>
+            
+            <div className="how-to-content">
+              <div className="game-overview">
+                <div className="overview-text">
+                  <h4>🧠 The Genius Concept</h4>
+                  <p>It's tic-tac-toe, but with Lightning Network payments. Yes, we took a game that 5-year-olds master and added cryptocurrency. Revolutionary? Probably not. Fun? Absolutely! 🚀</p>
+                  
+                  <div className="feature-highlights">
+                    <span className="highlight">⚡ Lightning Fast Payments</span>
+                    <span className="highlight">🎮 Real-Time Multiplayer</span>
+                    <span className="highlight">🏆 Achievement System</span>
+                    <span className="highlight">🎁 Mystery Boxes</span>
+                    <span className="highlight">📊 Leaderboards</span>
+                  </div>
+                </div>
+                
+                <div className="game-preview">
+                  <div className="preview-board">
+                    <div className="preview-cell">X</div>
+                    <div className="preview-cell">O</div>
+                    <div className="preview-cell">X</div>
+                    <div className="preview-cell">O</div>
+                    <div className="preview-cell win">X</div>
+                    <div className="preview-cell">O</div>
+                    <div className="preview-cell">X</div>
+                    <div className="preview-cell"></div>
+                    <div className="preview-cell"></div>
+                  </div>
+                  <p className="preview-caption">↑ Actual game footage (results may vary based on skill level)</p>
+                </div>
+              </div>
+
+              <div className="rules-section">
+                <h4>📜 The Sacred Rules (Please Don't Break Them)</h4>
+                
+                <div className="rule-card">
+                  <div className="rule-number">1️⃣</div>
+                  <div className="rule-content">
+                    <h5>Getting Started (The Easy Part)</h5>
+                    <ul>
+                      <li>Enter your Lightning address (e.g., yourname@speed.app) - Yes, that @ symbol is important</li>
+                      <li>Choose your bet amount (Start small, your ego will thank you later)</li>
+                      <li>Accept terms (The legal stuff nobody reads but everyone agrees to)</li>
+                      <li>Click "⚡ Start Game" like you mean it</li>
+                    </ul>
+                  </div>
+                </div>
+
+                <div className="rule-card">
+                  <div className="rule-number">2️⃣</div>
+                  <div className="rule-content">
+                    <h5>Payment Time (Where Your Money Goes Bye-Bye)</h5>
+                    <ul>
+                      <li>You'll get a Lightning invoice - pay it or forever hold your peace</li>
+                      <li>Scan the QR code with your Lightning wallet (or copy-paste like a caveman)</li>
+                      <li>Payment confirmed? Great! Payment failed? Try again (and check your wallet balance) 💸</li>
+                    </ul>
+                  </div>
+                </div>
+
+                <div className="rule-card">
+                  <div className="rule-number">3️⃣</div>
+                  <div className="rule-content">
+                    <h5>Matchmaking (Finding Your Opponent)</h5>
+                    <ul>
+                      <li>We'll search for a human opponent for 13-25 seconds</li>
+                      <li>Opponent found = 5-second countdown = Game time! 🎮</li>
+                    </ul>
+                  </div>
+                </div>
+
+                <div className="rule-card">
+                  <div className="rule-number">4️⃣</div>
+                  <div className="rule-content">
+                    <h5>Gameplay (The Moment of Truth)</h5>
+                    <ul>
+                      <li><strong>Objective:</strong> Get 3 in a row (horizontal, vertical, or diagonal) - kindergarten rules apply</li>
+                      <li><strong>First Move:</strong> 8 seconds to think (use them wisely)</li>
+                      <li><strong>Subsequent Moves:</strong> 5 seconds each (no pressure, just your money on the line)</li>
+                      <li><strong>Timeout:</strong> Take too long = you forfeit your turn (tough love)</li>
+                      <li><strong>Winning:</strong> Three in a row = victory dance time 🕺💃</li>
+                      <li><strong>Draw:</strong> Nobody wins = awkward silence</li>
+                    </ul>
+                  </div>
+                </div>
+
+                <div className="rule-card">
+                  <div className="rule-number">5️⃣</div>
+                  <div className="rule-content">
+                    <h5>Victory & Rewards (The Good Stuff)</h5>
+                    <ul>
+                      <li><strong>Win:</strong> Instant payout to your Lightning address (cha-ching! 💰)</li>
+                      <li><strong>Lose:</strong> Character building experience (priceless, but you still lost money)</li>
+                      <li><strong>Achievements:</strong> Unlock badges for various accomplishments</li>
+                      <li><strong>Mystery Boxes:</strong> Earn them through gameplay (it's like gambling within gambling)</li>
+                      <li><strong>Streaks:</strong> Win multiple games in a row for bonus rewards</li>
+                    </ul>
+                  </div>
+                </div>
+              </div>
+
+              <div className="features-section">
+                <h4>🎮 Extra Features (Because Why Not?)</h4>
+                
+                <div className="feature-grid">
+                  <div className="feature-item">
+                    <span className="feature-icon">🏆</span>
+                    <div>
+                      <strong>Achievements</strong>
+                      <p>Collect badges like "First Win", "Comeback King", and "Lightning Fast" (some easier than others)</p>
+                    </div>
+                  </div>
+                  
+                  <div className="feature-item">
+                    <span className="feature-icon">🎁</span>
+                    <div>
+                      <strong>Mystery Boxes</strong>
+                      <p>Earn boxes through gameplay. Open them for surprise sat rewards (surprises not guaranteed to be pleasant)</p>
+                    </div>
+                  </div>
+                  
+                  <div className="feature-item">
+                    <span className="feature-icon">📊</span>
+                    <div>
+                      <strong>Leaderboards</strong>
+                      <p>See how you rank against other players (prepare your ego accordingly)</p>
+                    </div>
+                  </div>
+                  
+                  <div className="feature-item">
+                    <span className="feature-icon">📈</span>
+                    <div>
+                      <strong>Game History</strong>
+                      <p>Track your wins, losses, and net earnings (or losses - no judgment here)</p>
+                    </div>
+                  </div>
+                  
+                  <div className="feature-item">
+                    <span className="feature-icon">🔥</span>
+                    <div>
+                      <strong>Streak Bonuses</strong>
+                      <p>Win consecutively for extra sats (because winning once just isn't enough)</p>
+                    </div>
+                  </div>
+                  
+                  <div className="feature-item">
+                    <span className="feature-icon">⚙️</span>
+                    <div>
+                      <strong>Settings</strong>
+                      <p>Customize sounds, haptics, and themes (make your losses look prettier)</p>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div className="tips-section">
+                <h4>💡 Pro Tips (From the Slightly Less Amateur Players)</h4>
+                <div className="tips-grid">
+                  <div className="tip">
+                    <strong>🎯 Corner Strategy:</strong> Start with corners, they're involved in more winning combinations
+                  </div>
+                  <div className="tip">
+                    <strong>🛡️ Defense First:</strong> Always block your opponent's potential winning move
+                  </div>
+                  <div className="tip">
+                    <strong>⏰ Time Management:</strong> Don't overthink it - it's still just tic-tac-toe
+                  </div>
+                  <div className="tip">
+                    <strong>💰 Bankroll:</strong> Don't bet your life savings (this should go without saying, but here we are)
+                  </div>
+                  <div className="tip">
+                    <strong>🎯 Stay Focused:</strong> Keep your strategy simple and stay alert to your opponent's moves
+                  </div>
+                  <div className="tip">
+                    <strong>🔄 Streaks:</strong> Momentum is real - ride those winning streaks (while they last)
+                  </div>
+                </div>
+              </div>
+
+              <div className="disclaimer-section">
+                <h4>⚠️ The Fine Print (Read This or Regret It Later)</h4>
+                <div className="disclaimer-content">
+                  <p><strong>Gambling Responsibly:</strong> Only wager what you can afford to lose. This is entertainment, not a retirement plan.</p>
+                  <p><strong>Technical Issues:</strong> Network problems happen. We're not liable for your WiFi deciding to take a coffee break.</p>
+                  <p><strong>Fair Play:</strong> All matches are against real players in fair, competitive gameplay.</p>
+                  <p><strong>Fairness:</strong> Games use standard tic-tac-toe logic. No rigging, no shenanigans, just good old-fashioned skill (or lack thereof).</p>
+                </div>
+              </div>
+            </div>
+
+            <div className="modal-footer">
+              <div className="footer-message">
+                <p>🎭 <em>Remember: This is a game of skill wrapped in childhood nostalgia, powered by internet money. What could go wrong?</em></p>
+              </div>
+              <button className="neo-btn primary" onClick={() => setShowHowToModal(false)}>
+                Got It! Let's Play 🚀
+              </button>
             </div>
           </div>
         </div>
@@ -867,45 +1023,556 @@ export default function App() {
 
       {showTerms && (
         <div className="modal-backdrop" onClick={() => setShowTerms(false)}>
-          <div className="modal terms" onClick={(e) => e.stopPropagation()}>
-            <h3>Terms & Conditions</h3>
-            <div className="section scrollable">
-              <p>Welcome to Tic‑Tac‑Toe. By playing you agree to fair play rules, our payout terms, and standard limitations of liability.</p>
-              <ul>
-                <li>Eligibility: You must be of legal age in your jurisdiction.</li>
-                <li>Payments: Bets are paid in SATS via Speed Wallet. Winners receive the advertised payout instantly after game end.</li>
-                <li>Bots Disclosure: In times of low traffic, the game may match you with a computer-controlled opponent (a “bot”). Bots adhere to the same time limits and rules and are clearly disclosed in the UI.</li>
-                <li>Fairness: No rigging. Game outcomes depend on player moves and valid game logic.</li>
-                <li>Disconnections: If a player disconnects or times out, the game may forfeit the turn or end per the rules shown in How to Play.</li>
-                <li>Liability: We are not liable for network outages, wallet downtime, or losses beyond your wager. Do not wager more than you can afford to lose.</li>
-                <li>Prohibited Conduct: No cheating, exploiting bugs, or harassment.</li>
-              </ul>
+          <div className="modal terms-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="terms-header">
+              <h3>Terms & Conditions</h3>
+              <p className="terms-subtitle">Lightning Network Tic-Tac-Toe Game Service</p>
+              <p className="last-updated">Last Updated: {new Date().toLocaleDateString()}</p>
             </div>
-            <div style={{ display:'flex', justifyContent:'flex-end' }}>
-              <button className="neo-btn" onClick={() => setShowTerms(false)}>Close</button>
+            
+            <div className="terms-content scrollable">
+              <div className="terms-section">
+                <h4>1. ACCEPTANCE OF TERMS</h4>
+                <p>By accessing, using, or playing this Lightning Network Tic-Tac-Toe game ("Service"), you ("User", "Player", "You") agree to be bound by these Terms & Conditions ("Terms"). If you do not agree to all terms, do not use this Service.</p>
+                <p><strong>IMPORTANT:</strong> This Service involves real money wagering using Bitcoin Lightning Network. Only use this Service if you understand the risks and can afford to lose your wagers.</p>
+              </div>
+
+              <div className="terms-section">
+                <h4>2. ELIGIBILITY AND LEGAL REQUIREMENTS</h4>
+                <ul>
+                  <li><strong>Age Requirement:</strong> You must be at least 18 years old or the legal gambling age in your jurisdiction, whichever is higher.</li>
+                  <li><strong>Jurisdiction Compliance:</strong> You are responsible for ensuring online gambling/gaming is legal in your location. We do not provide legal advice.</li>
+                  <li><strong>Prohibited Jurisdictions:</strong> This Service is not available to residents of countries where Bitcoin or online gambling is prohibited.</li>
+                  <li><strong>Identity Verification:</strong> We reserve the right to request identity verification at any time. Failure to provide requested information may result in account suspension and forfeiture of funds.</li>
+                  <li><strong>One Account Policy:</strong> One account per person. Multiple accounts will result in permanent ban and fund forfeiture.</li>
+                </ul>
+              </div>
+
+              <div className="terms-section">
+                <h4>3. GAME RULES AND MECHANICS</h4>
+                <ul>
+                  <li><strong>Game Type:</strong> Standard 3x3 Tic-Tac-Toe with monetary wagers using Bitcoin Lightning Network.</li>
+                  <li><strong>Turn Timers:</strong> First move: 8 seconds maximum. Subsequent moves: 5 seconds maximum. Exceeding time limits forfeits your turn.</li>
+                  <li><strong>Winning Conditions:</strong> First player to achieve three marks in a row (horizontal, vertical, or diagonal) wins.</li>
+                  <li><strong>Draw Games:</strong> If the board is full without a winner, the game is a draw and wagers are returned (minus any network fees).</li>
+                  <li><strong>Game Integrity:</strong> All moves are recorded with timestamps. Games cannot be reversed once completed.</li>
+                </ul>
+              </div>
+
+              <div className="terms-section">
+                <h4>4. PAYMENT TERMS AND WAGERS</h4>
+                <ul>
+                  <li><strong>Currency:</strong> All wagers and payouts are in Bitcoin Satoshis (SATS) via Lightning Network.</li>
+                  <li><strong>Wallet Requirements:</strong> You must provide a valid Lightning Network address for payouts. Invalid addresses may result in permanent fund loss.</li>
+                  <li><strong>Wager Processing:</strong> Wagers are debited immediately upon joining a game. No refunds for completed games.</li>
+                  <li><strong>Payout Processing:</strong> Winnings are automatically sent to your provided Lightning address within 60 seconds of game completion.</li>
+                  <li><strong>Network Fees:</strong> Lightning Network transaction fees are deducted from payouts. Fees typically range from 0-10 SATS.</li>
+                  <li><strong>Minimum/Maximum Wagers:</strong> Wager limits are displayed in-game and may change without notice.</li>
+                  <li><strong>Failed Transactions:</strong> We are not liable for failed Lightning transactions due to network issues, invalid addresses, or insufficient channel liquidity.</li>
+                </ul>
+              </div>
+
+              <div className="terms-section">
+                <h4>5. LIMITATION OF LIABILITY</h4>
+                <p><strong>TO THE MAXIMUM EXTENT PERMITTED BY LAW:</strong></p>
+                <ul>
+                  <li><strong>Service "As-Is":</strong> This Service is provided "AS-IS" without warranties of any kind, express or implied.</li>
+                  <li><strong>Technical Issues:</strong> We are not liable for losses due to internet outages, server downtime, wallet malfunctions, Lightning Network failures, or any technical problems.</li>
+                  <li><strong>Maximum Liability:</strong> Our total liability to you cannot exceed the amount of your wagers in the past 30 days.</li>
+                  <li><strong>Consequential Damages:</strong> We are not liable for indirect, incidental, special, or consequential damages.</li>
+                  <li><strong>Force Majeure:</strong> We are not liable for delays or failures due to circumstances beyond our reasonable control.</li>
+                  <li><strong>Third-Party Services:</strong> We are not responsible for failures of third-party services including Lightning Network, wallet providers, or payment processors.</li>
+                </ul>
+              </div>
+
+              <div className="terms-section">
+                <h4>6. PROHIBITED CONDUCT</h4>
+                <p>The following activities are strictly prohibited and may result in immediate account termination and fund forfeiture:</p>
+                <ul>
+                  <li><strong>Cheating:</strong> Using bots, scripts, exploits, or any automated tools to gain unfair advantage.</li>
+                  <li><strong>Collusion:</strong> Coordinating with other players to manipulate game outcomes.</li>
+                  <li><strong>Multiple Accounts:</strong> Creating or using multiple accounts to circumvent limits or policies.</li>
+                  <li><strong>Bug Exploitation:</strong> Intentionally exploiting software bugs or vulnerabilities.</li>
+                  <li><strong>Harassment:</strong> Abusive, threatening, or inappropriate behavior toward other users.</li>
+                  <li><strong>Fraud:</strong> Using stolen funds, fake identities, or engaging in any fraudulent activity.</li>
+                  <li><strong>Money Laundering:</strong> Using the Service to disguise the source of illegal funds.</li>
+                  <li><strong>Reverse Engineering:</strong> Attempting to decompile, reverse engineer, or extract source code.</li>
+                </ul>
+              </div>
+
+              <div className="terms-section">
+                <h4>7. ACCOUNT TERMINATION AND ENFORCEMENT</h4>
+                <ul>
+                  <li><strong>Immediate Termination:</strong> We may terminate your access immediately for violations of these Terms.</li>
+                  <li><strong>Fund Forfeiture:</strong> Serious violations may result in permanent forfeiture of deposited and won funds.</li>
+                  <li><strong>Investigation Rights:</strong> We may investigate suspicious activity and freeze accounts pending investigation.</li>
+                  <li><strong>Law Enforcement:</strong> We cooperate with law enforcement and may report illegal activity.</li>
+                  <li><strong>No Refund Policy:</strong> Terminated accounts are not entitled to refunds of wagers or deposits.</li>
+                </ul>
+              </div>
+
+              <div className="terms-section">
+                <h4>8. PRIVACY AND DATA COLLECTION</h4>
+                <ul>
+                  <li><strong>Minimal Data:</strong> We collect only data necessary for game operation and fraud prevention.</li>
+                  <li><strong>Game Records:</strong> All games, moves, timestamps, and wager amounts are permanently recorded.</li>
+                  <li><strong>Payment Data:</strong> Lightning addresses and transaction IDs are stored for payout processing and dispute resolution.</li>
+                  <li><strong>No Personal Information:</strong> We do not require or store personal identification information unless legally required.</li>
+                  <li><strong>Data Retention:</strong> Game and payment data may be retained indefinitely for legal and operational purposes.</li>
+                  <li><strong>Third-Party Sharing:</strong> Data may be shared with law enforcement, regulators, or service providers as required.</li>
+                </ul>
+              </div>
+
+              <div className="terms-section">
+                <h4>9. SERVICE AVAILABILITY</h4>
+                <ul>
+                  <li><strong>No Guaranteed Uptime:</strong> We do not guarantee continuous service availability.</li>
+                  <li><strong>Maintenance:</strong> Scheduled maintenance may temporarily interrupt service.</li>
+                  <li><strong>Emergency Shutdowns:</strong> We may suspend service immediately for security or legal reasons.</li>
+                  <li><strong>Permanent Closure:</strong> We reserve the right to permanently close the Service with 30 days notice.</li>
+                  <li><strong>Final Settlement:</strong> Upon permanent closure, all outstanding wagers will be settled and funds returned where possible.</li>
+                </ul>
+              </div>
+
+              <div className="terms-section">
+                <h4>10. DISPUTE RESOLUTION AND ARBITRATION</h4>
+                <ul>
+                  <li><strong>Arbitration Agreement:</strong> All disputes must be resolved through binding arbitration, not court proceedings.</li>
+                  <li><strong>Individual Claims Only:</strong> No class action lawsuits are permitted under these Terms.</li>
+                  <li><strong>Governing Law:</strong> These Terms are governed by the laws of [YOUR JURISDICTION] without regard to conflict of law principles.</li>
+                  <li><strong>Dispute Process:</strong> Contact support first for dispute resolution. Unresolved disputes proceed to arbitration.</li>
+                  <li><strong>Limitation Period:</strong> All claims must be brought within 1 year of the event giving rise to the claim.</li>
+                </ul>
+              </div>
+
+              <div className="terms-section">
+                <h4>11. INTELLECTUAL PROPERTY</h4>
+                <ul>
+                  <li><strong>Our Rights:</strong> All game software, designs, and content are our exclusive property.</li>
+                  <li><strong>Limited License:</strong> You receive only a limited, revocable license to use the Service.</li>
+                  <li><strong>No Copying:</strong> Reproduction, distribution, or modification of our content is prohibited.</li>
+                  <li><strong>Trademark:</strong> All trademarks and logos are our property and may not be used without permission.</li>
+                </ul>
+              </div>
+
+              <div className="terms-section">
+                <h4>12. AUTOMATED OPPONENTS (BOTS)</h4>
+                <p><strong>BOT USAGE:</strong> This service may utilize computer-controlled opponents ("Bots") when insufficient human players are available.</p>
+                <ul>
+                  <li><strong>Bot Deployment:</strong> Bots may be used at our discretion to maintain game availability and reduce wait times.</li>
+                  <li><strong>No Identification Required:</strong> We are not obligated to identify whether your opponent is human or automated.</li>
+                  <li><strong>Payout Equality:</strong> Winning against bots pays the same as winning against human opponents.</li>
+                  <li><strong>Player Acceptance:</strong> By using this service, you acknowledge and accept that you may play against automated opponents without prior notice or identification.</li>
+                </ul>
+              </div>
+
+              <div className="terms-section">
+                <h4>13. RESPONSIBLE GAMBLING</h4>
+                <ul>
+                  <li><strong>Risk Warning:</strong> Gambling involves risk of monetary loss. Never wager more than you can afford to lose.</li>
+                  <li><strong>Addiction Resources:</strong> If you have gambling problems, seek help from appropriate organizations.</li>
+                  <li><strong>Self-Exclusion:</strong> Contact support to permanently close your account if needed.</li>
+                  <li><strong>Cooling-Off Periods:</strong> We may implement cooling-off periods for heavy users.</li>
+                  <li><strong>No Credit:</strong> We do not extend credit or loans for gambling purposes.</li>
+                </ul>
+              </div>
+
+              <div className="terms-section">
+                <h4>14. MODIFICATIONS TO TERMS</h4>
+                <ul>
+                  <li><strong>Update Rights:</strong> We may modify these Terms at any time without prior notice.</li>
+                  <li><strong>Effective Date:</strong> Changes take effect immediately upon posting.</li>
+                  <li><strong>Continued Use:</strong> Your continued use constitutes acceptance of modified Terms.</li>
+                  <li><strong>Material Changes:</strong> Significant changes may be announced via the Service interface.</li>
+                </ul>
+              </div>
+
+              <div className="terms-section">
+                <h4>15. SEVERABILITY AND ENTIRE AGREEMENT</h4>
+                <ul>
+                  <li><strong>Severability:</strong> If any provision is found invalid, the remaining Terms remain in effect.</li>
+                  <li><strong>Entire Agreement:</strong> These Terms constitute the complete agreement between you and us.</li>
+                  <li><strong>No Waiver:</strong> Failure to enforce any provision does not constitute a waiver of that provision.</li>
+                  <li><strong>Survival:</strong> Provisions regarding liability, disputes, and intellectual property survive termination.</li>
+                </ul>
+              </div>
+
+              <div className="terms-section">
+                <h4>16. CONTACT INFORMATION</h4>
+                <p>For support, legal notices, or questions about these Terms:</p>
+                <ul>
+                  <li><strong>Email:</strong> support@[yourgame].com</li>
+                  <li><strong>Legal Department:</strong> legal@[yourgame].com</li>
+                  <li><strong>Mailing Address:</strong> [Your Business Address]</li>
+                  <li><strong>Response Time:</strong> We aim to respond within 48 hours for support requests, 7 days for legal matters.</li>
+                </ul>
+                <p className="terms-footer">Last Updated: {new Date().toLocaleDateString()}</p>
+              </div>
+            </div>
+            
+            <div className="terms-footer">
+              <button className="neo-btn primary" onClick={() => setShowTerms(false)}>
+                I Accept These Terms
+              </button>
             </div>
           </div>
         </div>
       )}
 
+      {/* Privacy Policy Modal */}
       {showPrivacy && (
-        <div className="modal-backdrop" onClick={() => setShowPrivacy(false)}>
-          <div className="modal privacy" onClick={(e) => e.stopPropagation()}>
-            <h3>Privacy Policy</h3>
-            <div className="section scrollable">
-              <p>We process minimal data needed to run the game and payments.</p>
-              <ul>
-                <li>What we store: basic gameplay events, bet amounts, and payout confirmations for anti-fraud and support.</li>
-                <li>Wallet data: Lightning address you provide is used solely to process payments.</li>
-                <li>Telemetry: Aggregate stats may be collected to improve matchmaking and game stability.</li>
-              </ul>
+          <div className="modal-backdrop" onClick={() => setShowPrivacy(false)}>
+            <div className="modal privacy-policy" onClick={(e) => e.stopPropagation()}>
+              <div className="modal-header">
+                <h3>🔒 Privacy Policy</h3>
+                <button className="modal-close" onClick={() => setShowPrivacy(false)}>×</button>
+              </div>
+              
+              <div className="modal-content">
+                <p className="privacy-intro">
+                  <strong>Effective Date:</strong> {new Date().toLocaleDateString()}<br/>
+                  This Privacy Policy explains how we collect, use, protect, and share your information when you use our Bitcoin-powered Tic-Tac-Toe gaming service ("Service").
+                </p>
+
+                <div className="privacy-section">
+                  <h4>1. INFORMATION WE COLLECT</h4>
+                  
+                  <h5>1.1 Automatically Collected Data</h5>
+                  <ul>
+                    <li><strong>Game Session Data:</strong> Game moves, timestamps, turn durations, game outcomes, wager amounts</li>
+                    <li><strong>Technical Data:</strong> IP addresses, browser type, device information, operating system, screen resolution</li>
+                    <li><strong>Usage Analytics:</strong> Pages visited, features used, session duration, click patterns, error logs</li>
+                    <li><strong>Performance Data:</strong> Loading times, network latency, connection quality, server response times</li>
+                    <li><strong>Socket Connection Data:</strong> Connection timestamps, disconnection events, reconnection attempts</li>
+                  </ul>
+
+                  <h5>1.2 User-Provided Data</h5>
+                  <ul>
+                    <li><strong>Lightning Address:</strong> Your Bitcoin Lightning Network address for receiving payouts</li>
+                    <li><strong>Payment Information:</strong> Transaction IDs, invoice details, payment confirmation data</li>
+                    <li><strong>Game Preferences:</strong> Theme settings, sound preferences, haptic feedback settings, notification preferences</li>
+                    <li><strong>Account Settings:</strong> Display preferences, timezone settings, language preferences</li>
+                    <li><strong>Communication Data:</strong> Support messages, feedback, bug reports, feature requests</li>
+                  </ul>
+
+                  <h5>1.3 Generated Gaming Data</h5>
+                  <ul>
+                    <li><strong>Achievement Records:</strong> Unlocked achievements, progress tracking, completion timestamps</li>
+                    <li><strong>Statistics:</strong> Win/loss ratios, total games played, earning history, streak records</li>
+                    <li><strong>Mystery Box Data:</strong> Box opening history, reward distributions, probability calculations</li>
+                    <li><strong>Leaderboard Information:</strong> Rankings, scores, competitive performance metrics</li>
+                    <li><strong>Behavioral Patterns:</strong> Playing habits, preferred game times, betting patterns, strategy analysis</li>
+                  </ul>
+                </div>
+
+                <div className="privacy-section">
+                  <h4>2. HOW WE USE YOUR INFORMATION</h4>
+                  
+                  <h5>2.1 Core Game Operations</h5>
+                  <ul>
+                    <li><strong>Game Functionality:</strong> Process moves, determine winners, manage game state, enforce rules</li>
+                    <li><strong>Matchmaking:</strong> Pair players with similar skill levels, manage waiting queues, balance game difficulty</li>
+                    <li><strong>Payment Processing:</strong> Execute Lightning Network transactions, verify payments, distribute winnings</li>
+                    <li><strong>Anti-Fraud Protection:</strong> Detect suspicious activity, prevent cheating, identify bot usage</li>
+                    <li><strong>Game Integrity:</strong> Maintain fair play, prevent exploitation, ensure random outcomes</li>
+                  </ul>
+
+                  <h5>2.2 User Experience Enhancement</h5>
+                  <ul>
+                    <li><strong>Personalization:</strong> Customize interface themes, remember preferences, suggest optimal bet amounts</li>
+                    <li><strong>Performance Optimization:</strong> Improve loading times, reduce latency, enhance stability</li>
+                    <li><strong>Feature Development:</strong> Analyze usage patterns to develop new features and improvements</li>
+                    <li><strong>Achievement Systems:</strong> Track progress, unlock rewards, calculate bonuses and streaks</li>
+                    <li><strong>Leaderboards:</strong> Rank players, display statistics, create competitive environments</li>
+                  </ul>
+
+                  <h5>2.3 Business Operations</h5>
+                  <ul>
+                    <li><strong>Analytics:</strong> Understand user behavior, measure engagement, identify popular features</li>
+                    <li><strong>Technical Support:</strong> Diagnose issues, provide assistance, improve service quality</li>
+                    <li><strong>Legal Compliance:</strong> Maintain records for regulatory requirements, respond to legal requests</li>
+                    <li><strong>Security Monitoring:</strong> Detect threats, prevent attacks, maintain system integrity</li>
+                    <li><strong>Service Improvement:</strong> Identify bugs, optimize performance, enhance user satisfaction</li>
+                  </ul>
+                </div>
+
+                <div className="privacy-section">
+                  <h4>3. AUTOMATED OPPONENT (BOT) DATA USAGE</h4>
+                  <p><strong>AI and Machine Learning:</strong> We use your gameplay data to improve our automated opponents and game algorithms:</p>
+                  <ul>
+                    <li><strong>Strategy Analysis:</strong> Your moves and strategies may be analyzed to improve bot behavior and create more challenging opponents</li>
+                    <li><strong>Difficulty Adjustment:</strong> Your skill level and performance data helps calibrate bot difficulty for balanced gameplay</li>
+                    <li><strong>Pattern Recognition:</strong> Your playing patterns contribute to machine learning models that enhance game AI</li>
+                    <li><strong>Behavioral Training:</strong> Your interaction data helps train bots to exhibit more human-like gameplay characteristics</li>
+                    <li><strong>No Personal Identification:</strong> Bot training uses anonymized gameplay data without linking to your personal identity</li>
+                    <li><strong>Opt-Out Not Available:</strong> Participation in AI improvement through gameplay data is mandatory for service usage</li>
+                  </ul>
+                </div>
+
+                <div className="privacy-section">
+                  <h4>4. LIGHTNING NETWORK AND BITCOIN DATA</h4>
+                  
+                  <h5>4.1 Payment Data Collection</h5>
+                  <ul>
+                    <li><strong>Lightning Addresses:</strong> Stored securely for payout processing and verification</li>
+                    <li><strong>Transaction Records:</strong> Complete history of all payments, winnings, and fees for accounting and legal purposes</li>
+                    <li><strong>Invoice Data:</strong> Payment requests, confirmation codes, settlement information</li>
+                    <li><strong>Network Fees:</strong> Tracking of Lightning Network fees deducted from payouts</li>
+                    <li><strong>Failed Transactions:</strong> Records of failed payments for troubleshooting and resolution</li>
+                  </ul>
+
+                  <h5>4.2 Financial Data Protection</h5>
+                  <ul>
+                    <li><strong>Encryption:</strong> All payment data encrypted using AES-256 encryption standards</li>
+                    <li><strong>Limited Access:</strong> Payment data accessible only to authorized personnel for processing</li>
+                    <li><strong>Audit Trails:</strong> Complete logs of all access to financial data for security monitoring</li>
+                    <li><strong>Compliance:</strong> Financial data handling complies with applicable cryptocurrency regulations</li>
+                    <li><strong>Retention:</strong> Financial records retained for minimum 7 years for legal and tax purposes</li>
+                  </ul>
+                </div>
+
+                <div className="privacy-section">
+                  <h4>5. DATA SHARING AND THIRD PARTIES</h4>
+                  
+                  <h5>5.1 Service Providers</h5>
+                  <ul>
+                    <li><strong>Lightning Network Nodes:</strong> Payment routing requires sharing transaction data with network participants</li>
+                    <li><strong>Hosting Services:</strong> Server providers may have access to encrypted data for infrastructure maintenance</li>
+                    <li><strong>Analytics Platforms:</strong> Anonymized usage data shared with analytics services for insights</li>
+                    <li><strong>Security Services:</strong> Fraud detection and security monitoring services receive relevant threat data</li>
+                    <li><strong>Support Tools:</strong> Customer service platforms access support communications and relevant account data</li>
+                  </ul>
+
+                  <h5>5.2 Legal and Regulatory Sharing</h5>
+                  <ul>
+                    <li><strong>Law Enforcement:</strong> Data shared when legally required by valid court orders or subpoenas</li>
+                    <li><strong>Regulatory Compliance:</strong> Financial data provided to regulators as required by applicable laws</li>
+                    <li><strong>Tax Authorities:</strong> Transaction records shared with tax authorities when legally mandated</li>
+                    <li><strong>Legal Proceedings:</strong> Data disclosed as necessary for legal defense or compliance with litigation</li>
+                    <li><strong>Safety Investigations:</strong> Information shared to investigate potential fraud, money laundering, or other crimes</li>
+                  </ul>
+
+                  <h5>5.3 Business Transfers</h5>
+                  <ul>
+                    <li><strong>Mergers and Acquisitions:</strong> Data may be transferred as part of business sale or merger</li>
+                    <li><strong>Asset Sales:</strong> Customer data included in sale of business assets</li>
+                    <li><strong>Bankruptcy:</strong> Data may be transferred to creditors or purchasers in bankruptcy proceedings</li>
+                  </ul>
+                </div>
+
+                <div className="privacy-section">
+                  <h4>6. DATA SECURITY AND PROTECTION</h4>
+                  
+                  <h5>6.1 Technical Safeguards</h5>
+                  <ul>
+                    <li><strong>Encryption:</strong> All data encrypted in transit (TLS 1.3) and at rest (AES-256)</li>
+                    <li><strong>Access Controls:</strong> Multi-factor authentication and role-based access controls for all systems</li>
+                    <li><strong>Network Security:</strong> Firewalls, intrusion detection systems, and DDoS protection</li>
+                    <li><strong>Data Backups:</strong> Regular encrypted backups stored in geographically distributed locations</li>
+                    <li><strong>Vulnerability Management:</strong> Regular security audits, penetration testing, and patch management</li>
+                  </ul>
+
+                  <h5>6.2 Operational Security</h5>
+                  <ul>
+                    <li><strong>Employee Training:</strong> Regular security awareness training for all personnel</li>
+                    <li><strong>Background Checks:</strong> Security screening for employees with data access</li>
+                    <li><strong>Incident Response:</strong> Comprehensive breach response procedures and notification protocols</li>
+                    <li><strong>Monitoring:</strong> 24/7 security monitoring and automated threat detection</li>
+                    <li><strong>Data Minimization:</strong> Collection and retention limited to necessary data only</li>
+                  </ul>
+                </div>
+
+                <div className="privacy-section">
+                  <h4>7. DATA RETENTION AND DELETION</h4>
+                  
+                  <h5>7.1 Retention Periods</h5>
+                  <ul>
+                    <li><strong>Game Data:</strong> Game history, moves, and outcomes retained indefinitely for service integrity</li>
+                    <li><strong>Financial Records:</strong> Payment and transaction data retained for minimum 7 years</li>
+                    <li><strong>Account Data:</strong> User preferences and settings retained while account is active</li>
+                    <li><strong>Technical Logs:</strong> Server logs and analytics data retained for 2 years maximum</li>
+                    <li><strong>Support Communications:</strong> Customer service records retained for 3 years</li>
+                  </ul>
+
+                  <h5>7.2 Data Deletion</h5>
+                  <ul>
+                    <li><strong>Account Closure:</strong> Personal preferences deleted within 30 days of account closure</li>
+                    <li><strong>Legal Requirements:</strong> Some data must be retained longer for legal compliance</li>
+                    <li><strong>Anonymization:</strong> Personal identifiers removed while preserving anonymous gameplay statistics</li>
+                    <li><strong>Automatic Deletion:</strong> Temporary data (sessions, cache) automatically deleted after expiration</li>
+                  </ul>
+                </div>
+
+                <div className="privacy-section">
+                  <h4>8. YOUR PRIVACY RIGHTS</h4>
+                  
+                  <h5>8.1 Access and Control</h5>
+                  <ul>
+                    <li><strong>Data Access:</strong> Request copies of your personal data we have collected</li>
+                    <li><strong>Data Correction:</strong> Request correction of inaccurate or incomplete personal data</li>
+                    <li><strong>Data Portability:</strong> Receive your data in a structured, machine-readable format</li>
+                    <li><strong>Account Deletion:</strong> Request deletion of your account and associated personal data</li>
+                    <li><strong>Communication Preferences:</strong> Opt out of marketing communications (where applicable)</li>
+                  </ul>
+
+                  <h5>8.2 Limitations on Rights</h5>
+                  <ul>
+                    <li><strong>Legal Requirements:</strong> Some data must be retained for legal compliance</li>
+                    <li><strong>Service Integrity:</strong> Game history data may be retained to prevent fraud</li>
+                    <li><strong>Financial Records:</strong> Payment data retained for accounting and tax purposes</li>
+                    <li><strong>Security Purposes:</strong> Some data retained to protect against fraud and abuse</li>
+                  </ul>
+
+                  <h5>8.3 Regional Rights</h5>
+                  <ul>
+                    <li><strong>GDPR (EU):</strong> Enhanced rights including data protection officer contact</li>
+                    <li><strong>CCPA (California):</strong> Right to know, delete, and opt-out of sale</li>
+                    <li><strong>Other Jurisdictions:</strong> Rights as provided by local privacy laws</li>
+                  </ul>
+                </div>
+
+                <div className="privacy-section">
+                  <h4>9. INTERNATIONAL DATA TRANSFERS</h4>
+                  <ul>
+                    <li><strong>Global Service:</strong> Your data may be processed in countries other than your residence</li>
+                    <li><strong>Adequate Protection:</strong> All transfers comply with applicable data protection laws</li>
+                    <li><strong>Safeguards:</strong> Standard contractual clauses and adequacy decisions where required</li>
+                    <li><strong>Lightning Network:</strong> Bitcoin transactions inherently involve international data transfer</li>
+                  </ul>
+                </div>
+
+                <div className="privacy-section">
+                  <h4>10. COOKIES AND TRACKING</h4>
+                  
+                  <h5>10.1 Local Storage</h5>
+                  <ul>
+                    <li><strong>Game Preferences:</strong> Theme, sound, and display settings stored locally</li>
+                    <li><strong>Performance Data:</strong> Local caching to improve loading times</li>
+                    <li><strong>Session Data:</strong> Temporary game state and connection information</li>
+                  </ul>
+
+                  <h5>10.2 Analytics Tracking</h5>
+                  <ul>
+                    <li><strong>Usage Analytics:</strong> Anonymous usage statistics for service improvement</li>
+                    <li><strong>Performance Monitoring:</strong> Error tracking and performance metrics</li>
+                    <li><strong>No Advertising:</strong> We do not use tracking for advertising purposes</li>
+                  </ul>
+                </div>
+
+                <div className="privacy-section">
+                  <h4>11. CHILDREN'S PRIVACY</h4>
+                  <ul>
+                    <li><strong>Age Restriction:</strong> Service not intended for users under 18 years of age</li>
+                    <li><strong>No Knowing Collection:</strong> We do not knowingly collect data from minors</li>
+                    <li><strong>Parental Rights:</strong> Parents may request deletion of child's data if discovered</li>
+                    <li><strong>Verification:</strong> We may require age verification for compliance</li>
+                  </ul>
+                </div>
+
+                <div className="privacy-section">
+                  <h4>12. CHANGES TO THIS PRIVACY POLICY</h4>
+                  <ul>
+                    <li><strong>Update Notification:</strong> Users notified of material changes via email or in-app notification</li>
+                    <li><strong>Effective Date:</strong> Changes become effective 30 days after notification</li>
+                    <li><strong>Continued Use:</strong> Continued service use constitutes acceptance of updated policy</li>
+                    <li><strong>Version History:</strong> Previous versions available upon request</li>
+                  </ul>
+                </div>
+
+                <div className="privacy-section">
+                  <h4>13. CONTACT INFORMATION</h4>
+                  <p>For privacy-related questions, requests, or concerns:</p>
+                  <ul>
+                    <li><strong>Privacy Officer:</strong> privacy@[yourgame].com</li>
+                    <li><strong>Data Protection Officer:</strong> dpo@[yourgame].com (EU residents)</li>
+                    <li><strong>General Support:</strong> support@[yourgame].com</li>
+                    <li><strong>Mailing Address:</strong> [Your Business Address]</li>
+                    <li><strong>Response Time:</strong> Privacy requests processed within 30 days</li>
+                  </ul>
+                  
+                  <p><strong>Regulatory Authorities:</strong> You have the right to lodge complaints with your local data protection authority regarding our privacy practices.</p>
+                </div>
+
+                <p className="privacy-footer">
+                  <strong>Last Updated:</strong> {new Date().toLocaleDateString()}<br/>
+                  <strong>Version:</strong> 1.0<br/>
+                  This Privacy Policy is effective immediately and applies to all users of our service.
+                </p>
+              </div>
             </div>
-            <div style={{ display:'flex', justifyContent:'flex-end' }}>
-              <button className="neo-btn" onClick={() => setShowPrivacy(false)}>Close</button>
+          </div>
+        )}
+
+      {/* New Feature Modals */}
+      {showAchievements && (
+        <AchievementSystem 
+          isOpen={showAchievements} 
+          onClose={() => setShowAchievements(false)}
+          lightningAddress={lightningAddress}
+          socket={socket}
+        />
+      )}
+
+      {showMysteryBoxes && (
+        <MysteryBoxes 
+          isOpen={showMysteryBoxes} 
+          onClose={() => setShowMysteryBoxes(false)}
+          lightningAddress={lightningAddress}
+          socket={socket}
+        />
+      )}
+
+      {showLeaderboards && (
+        <LeaderboardSystem 
+          isOpen={showLeaderboards} 
+          onClose={() => setShowLeaderboards(false)}
+          lightningAddress={lightningAddress}
+          socket={socket}
+        />
+      )}
+
+
+      {/* Notifications */}
+      {newAchievement && (
+        <div className="achievement-notification">
+          <div className="achievement-content">
+            <div className="achievement-icon">🏆</div>
+            <div className="achievement-text">
+              <h4>Achievement Unlocked!</h4>
+              <p>{newAchievement.name}</p>
+              <p className="reward">+{newAchievement.reward} sats</p>
             </div>
           </div>
         </div>
       )}
+
+      {newMysteryBox && (
+        <div className="mysterybox-notification">
+          <div className="mysterybox-content">
+            <div className="mysterybox-icon">🎁</div>
+            <div className="mysterybox-text">
+              <h4>Mystery Box Received!</h4>
+              <p>{newMysteryBox.boxType} Box</p>
+              <p className="reason">{newMysteryBox.reason}</p>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {streakBonus && (
+        <div className="streak-notification">
+          <div className="streak-content">
+            <div className="streak-icon">🔥</div>
+            <div className="streak-text">
+              <h4>Streak Bonus!</h4>
+              <p>Win streak: {streakBonus.streak}</p>
+              <p className="reward">+{streakBonus.bonus} sats bonus</p>
+            </div>
+          </div>
+        </div>
+      )}
+
+      <div ref={confettiRef} className="confetti-container"></div>
     </div>
   );
 }

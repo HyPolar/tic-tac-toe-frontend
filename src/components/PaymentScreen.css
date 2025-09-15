@@ -1,0 +1,167 @@
+.payment-screen {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-height: 100vh;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  padding: 20px;
+}
+
+.payment-container {
+  background: white;
+  border-radius: 20px;
+  padding: 30px;
+  box-shadow: 0 20px 40px rgba(0,0,0,0.1);
+  max-width: 450px;
+  width: 100%;
+  text-align: center;
+}
+
+.payment-container h2 {
+  color: #333;
+  margin-bottom: 10px;
+  font-size: 28px;
+  font-weight: bold;
+}
+
+.payment-message {
+  color: #666;
+  margin-bottom: 20px;
+  font-size: 16px;
+}
+
+.payment-timer {
+  background: #fff3cd;
+  border: 1px solid #ffeaa7;
+  border-radius: 8px;
+  padding: 10px;
+  margin-bottom: 20px;
+}
+
+.payment-timer p {
+  color: #856404;
+  font-weight: bold;
+  margin: 0;
+  font-size: 18px;
+}
+
+.qr-section {
+  margin: 20px 0;
+  display: flex;
+  justify-content: center;
+}
+
+.qr-section svg {
+  border: 2px solid #e9ecef;
+  border-radius: 10px;
+  padding: 10px;
+}
+
+.payment-buttons {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 20px 0;
+}
+
+.pay-button {
+  background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+  color: white;
+  border: none;
+  padding: 15px 25px;
+  border-radius: 50px;
+  font-size: 16px;
+  font-weight: bold;
+  cursor: pointer;
+  transition: all 0.3s ease;
+}
+
+.pay-button:hover:not(:disabled) {
+  transform: translateY(-2px);
+  box-shadow: 0 10px 20px rgba(240, 147, 251, 0.3);
+}
+
+.pay-button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.invoice-link {
+  background: #007bff;
+  color: white;
+  text-decoration: none;
+  padding: 12px 25px;
+  border-radius: 25px;
+  font-weight: bold;
+  transition: all 0.3s ease;
+  display: inline-block;
+}
+
+.invoice-link:hover {
+  background: #0056b3;
+  transform: translateY(-1px);
+}
+
+.copy-button {
+  background: #28a745;
+  color: white;
+  border: none;
+  padding: 12px 25px;
+  border-radius: 25px;
+  font-weight: bold;
+  cursor: pointer;
+  transition: all 0.3s ease;
+}
+
+.copy-button:hover {
+  background: #1e7e34;
+  transform: translateY(-1px);
+}
+
+.payment-info {
+  background: #f8f9fa;
+  border-radius: 10px;
+  padding: 15px;
+  margin: 20px 0;
+}
+
+.payment-info p {
+  margin: 5px 0;
+  font-weight: bold;
+  color: #333;
+}
+
+.cancel-button {
+  background: #dc3545;
+  color: white;
+  border: none;
+  padding: 12px 25px;
+  border-radius: 25px;
+  font-weight: bold;
+  cursor: pointer;
+  transition: all 0.3s ease;
+  margin-top: 10px;
+}
+
+.cancel-button:hover {
+  background: #c82333;
+  transform: translateY(-1px);
+}
+
+/* Mobile responsiveness */
+@media (max-width: 768px) {
+  .payment-container {
+    margin: 10px;
+    padding: 20px;
+  }
+  
+  .payment-container h2 {
+    font-size: 24px;
+  }
+  
+  .qr-section svg {
+    width: 150px;
+    height: 150px;
+  }
+}
