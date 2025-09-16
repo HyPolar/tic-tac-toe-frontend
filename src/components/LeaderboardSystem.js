@@ -8,10 +8,15 @@ export default function LeaderboardSystem({ lightningAddress, onClose }) {
   const [loading, setLoading] = useState(true);
   const [period, setPeriod] = useState('all');
   const [userRank, setUserRank] = useState(null);
+  const [userStats, setUserStats] = useState(null);
+  const [showUserStats, setShowUserStats] = useState(false);
 
   useEffect(() => {
     fetchLeaderboards();
-  }, [activeTab, period]);
+    if (lightningAddress) {
+      fetchUserStats();
+    }
+  }, [activeTab, period, lightningAddress]);
 
   const fetchLeaderboards = async () => {
     try {
@@ -55,6 +60,18 @@ export default function LeaderboardSystem({ lightningAddress, onClose }) {
     }
   };
 
+  const fetchUserStats = async () => {
+    try {
+      const response = await fetch(`${BACKEND_URL}/api/player-stats/${lightningAddress}`);
+      if (response.ok) {
+        const data = await response.json();
+        setUserStats(data.stats);
+      }
+    } catch (error) {
+      console.error('Failed to fetch user stats:', error);
+    }
+  };
+
   const handleTabChange = (tab) => {
     setActiveTab(tab);
     if (tab === 'streaks') {
@@ -66,16 +83,31 @@ export default function LeaderboardSystem({ lightningAddress, onClose }) {
     switch (type) {
       case 'profit':
       case 'satsEarned':
-        return `${value >= 0 ? '+' : ''}${value} SATS`;
+        return `${value >= 0 ? '+' : ''}${value.toLocaleString()} SATS`;
       case 'wins':
-        return `${value} wins`;
+        return `${value.toLocaleString()} wins`;
       case 'winrate':
         return `${value}%`;
       case 'streaks':
-        return `${value} streak`;
+        return `${value} game streak`;
       default:
-        return value;
+        return value.toLocaleString();
     }
+  };
+
+  const getTrendIcon = (rank) => {
+    // This would require historical data to show trends
+    // For now, we'll show neutral
+    return '━';
+  };
+
+  const getPlayerBadge = (player) => {
+    if (player.winRate >= 90) return { icon: '👑', text: 'Champion', color: '#FFD700' };
+    if (player.winRate >= 75) return { icon: '🏆', text: 'Master', color: '#FFD700' };
+    if (player.winRate >= 60) return { icon: '⭐', text: 'Expert', color: '#FFA500' };
+    if (player.streak >= 5) return { icon: '🔥', text: 'Hot Streak', color: '#FF4500' };
+    if (player.gamesPlayed >= 100) return { icon: '🎯', text: 'Veteran', color: '#4CAF50' };
+    return null;
   };
 
   const getRankIcon = (rank) => {
@@ -98,10 +130,10 @@ export default function LeaderboardSystem({ lightningAddress, onClose }) {
 
   const currentLeaderboard = leaderboards[activeTab] || [];
   const tabs = [
-    { id: 'profit', name: 'Profit', icon: '💰' },
-    { id: 'wins', name: 'Wins', icon: '🏆' },
-    { id: 'winrate', name: 'Win Rate', icon: '📈' },
-    { id: 'streaks', name: 'Streaks', icon: '🔥' }
+    { id: 'profit', name: 'Profit', icon: '💰', description: 'Total SATS earned' },
+    { id: 'wins', name: 'Wins', icon: '🏆', description: 'Games won' },
+    { id: 'winrate', name: 'Win Rate', icon: '📈', description: 'Win percentage' },
+    { id: 'streaks', name: 'Streaks', icon: '🔥', description: 'Longest winning streak' }
   ];
 
   const periods = [
@@ -145,10 +177,81 @@ export default function LeaderboardSystem({ lightningAddress, onClose }) {
           </div>
         )}
 
-        {userRank && (
-          <div className="user-rank">
-            <span className="rank-icon">{getRankIcon(userRank)}</span>
-            <span>Your Rank: #{userRank}</span>
+        {(userRank || userStats) && (
+          <div className="user-profile-section">
+            {userRank && (
+              <div className="user-rank">
+                <span className="rank-icon">{getRankIcon(userRank)}</span>
+                <span>Your Rank: #{userRank}</span>
+                <span className="trend-indicator">{getTrendIcon(userRank)}</span>
+              </div>
+            )}
+            
+            {userStats && (
+              <div className="user-quick-stats">
+                <div className="quick-stat">
+                  <span className="stat-label">Games:</span>
+                  <span className="stat-value">{userStats.totalGames || 0}</span>
+                </div>
+                <div className="quick-stat">
+                  <span className="stat-label">Win Rate:</span>
+                  <span className="stat-value">{userStats.winRate || 0}%</span>
+                </div>
+                <div className="quick-stat">
+                  <span className="stat-label">Streak:</span>
+                  <span className="stat-value">{userStats.currentStreak || 0}</span>
+                </div>
+                <button 
+                  className="stats-toggle-btn"
+                  onClick={() => setShowUserStats(!showUserStats)}
+                >
+                  {showUserStats ? 'Hide' : 'Show'} Detailed Stats
+                </button>
+              </div>
+            )}
+            
+            {showUserStats && userStats && (
+              <div className="detailed-user-stats">
+                <h4>📊 Your Detailed Statistics</h4>
+                <div className="detailed-stats-grid">
+                  <div className="detailed-stat">
+                    <span className="stat-icon">🏆</span>
+                    <span className="stat-name">Total Wins</span>
+                    <span className="stat-number">{userStats.wins || 0}</span>
+                  </div>
+                  <div className="detailed-stat">
+                    <span className="stat-icon">💰</span>
+                    <span className="stat-name">Total Profit</span>
+                    <span className="stat-number">{userStats.profit || 0} SATS</span>
+                  </div>
+                  <div className="detailed-stat">
+                    <span className="stat-icon">📈</span>
+                    <span className="stat-name">Best Streak</span>
+                    <span className="stat-number">{userStats.bestStreak || 0}</span>
+                  </div>
+                  <div className="detailed-stat">
+                    <span className="stat-icon">⚡</span>
+                    <span className="stat-name">Current Streak</span>
+                    <span className="stat-number">{userStats.currentStreak || 0}</span>
+                  </div>
+                </div>
+                
+                {userStats.ranks && (
+                  <div className="rank-breakdown">
+                    <h5>🏅 Your Rankings</h5>
+                    <div className="rank-grid">
+                      {Object.entries(userStats.ranks).map(([category, rank]) => rank && (
+                        <div key={category} className="rank-item">
+                          <span>{tabs.find(t => t.id === category)?.icon}</span>
+                          <span>{category.charAt(0).toUpperCase() + category.slice(1)}</span>
+                          <span>#{rank}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
           </div>
         )}
 
@@ -167,28 +270,59 @@ export default function LeaderboardSystem({ lightningAddress, onClose }) {
                   {currentLeaderboard.map((player, index) => {
                     const rank = index + 1;
                     const isCurrentUser = player.lightningAddress === lightningAddress || player.playerId === lightningAddress;
+                    const badge = getPlayerBadge(player);
+                    const displayName = player.lightningAddress || player.playerId || `Player ${index + 1}`;
+                    const shortName = displayName.length > 25 ? displayName.substring(0, 22) + '...' : displayName;
                     
                     return (
                       <div 
                         key={player.lightningAddress || player.playerId || index} 
-                        className={`table-row ${isCurrentUser ? 'current-user' : ''}`}
-                        style={{ borderLeft: `3px solid ${getRankColor(rank)}` }}
+                        className={`table-row ${isCurrentUser ? 'current-user' : ''} ${rank <= 3 ? 'top-three' : ''}`}
+                        style={{ borderLeft: `4px solid ${getRankColor(rank)}` }}
                       >
-                        <span 
-                          className="rank-cell"
-                          style={{ color: getRankColor(rank) }}
-                        >
-                          {getRankIcon(rank)}
-                        </span>
-                        <span className="player-cell">
-                          <span className="player-name">
-                            {player.lightningAddress || player.playerId || `Player ${index + 1}`}
+                        <div className="rank-cell">
+                          <span 
+                            className="rank-number"
+                            style={{ color: getRankColor(rank) }}
+                          >
+                            {getRankIcon(rank)}
                           </span>
-                          {isCurrentUser && <span className="you-indicator">(You)</span>}
-                        </span>
-                        <span className="score-cell">
-                          {formatValue(player.score, activeTab)}
-                        </span>
+                          {rank <= 3 && <div className="rank-glow" style={{ background: getRankColor(rank) }}></div>}
+                        </div>
+                        
+                        <div className="player-cell">
+                          <div className="player-info">
+                            <div className="player-name-row">
+                              <span className="player-name" title={displayName}>
+                                {shortName}
+                              </span>
+                              {isCurrentUser && <span className="you-indicator">YOU</span>}
+                              {badge && (
+                                <span className="player-badge" style={{ color: badge.color }}>
+                                  {badge.icon} {badge.text}
+                                </span>
+                              )}
+                            </div>
+                            <div className="player-sub-info">
+                              <span className="sub-stat">W: {player.wins || 0}</span>
+                              <span className="sub-stat">Games: {player.gamesPlayed || 0}</span>
+                              <span className="sub-stat">WR: {player.winRate || 0}%</span>
+                              {player.streak > 0 && <span className="sub-stat streak">🔥{player.streak}</span>}
+                            </div>
+                          </div>
+                        </div>
+                        
+                        <div className="score-cell">
+                          <div className="main-score">
+                            {formatValue(player.score, activeTab)}
+                          </div>
+                          {activeTab === 'profit' && player.score > 0 && (
+                            <div className="profit-indicator positive">📈</div>
+                          )}
+                          {activeTab === 'profit' && player.score < 0 && (
+                            <div className="profit-indicator negative">📉</div>
+                          )}
+                        </div>
                       </div>
                     );
                   })}
