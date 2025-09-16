@@ -1,171 +1,200 @@
 import React, { useState, useEffect } from 'react';
-import './MysteryBoxes.css';
 
-const MysteryBoxes = ({ isOpen, onClose, lightningAddress, socket }) => {
-  const [mysteryBoxes, setMysteryBoxes] = useState([]);
-  const [loading, setLoading] = useState(false);
+const BACKEND_URL = process.env.REACT_APP_BACKEND_URL || 'http://localhost:4000';
+
+export default function MysteryBoxes({ lightningAddress, onClose }) {
+  const [boxes, setBoxes] = useState([]);
+  const [loading, setLoading] = useState(true);
   const [openingBox, setOpeningBox] = useState(null);
+  const [lastReward, setLastReward] = useState(null);
+  const [stats, setStats] = useState(null);
 
-  // Fetch mystery boxes when component opens
   useEffect(() => {
-    if (isOpen && lightningAddress && socket) {
-      setLoading(true);
-      socket.emit('requestMysteryBoxes', { lightningAddress });
-      
-      const handleMysteryBoxes = (data) => {
-        setMysteryBoxes(data.boxes || []);
-        setLoading(false);
-      };
-
-      const handleBoxOpened = (data) => {
-        // Remove opened box and show reward
-        setMysteryBoxes(prev => prev.filter(box => box.id !== data.boxId));
-        setOpeningBox(null);
-        // The reward notification will be handled by the parent App component
-      };
-
-      socket.on('mysteryBoxesData', handleMysteryBoxes);
-      socket.on('mysteryBoxOpened', handleBoxOpened);
-
-      return () => {
-        socket.off('mysteryBoxesData', handleMysteryBoxes);
-        socket.off('mysteryBoxOpened', handleBoxOpened);
-      };
+    if (lightningAddress) {
+      fetchBoxes();
+      fetchStats();
     }
-  }, [isOpen, lightningAddress, socket]);
+  }, [lightningAddress]);
 
-  const handleOpenBox = (boxId) => {
-    if (openingBox || !socket) return;
-    setOpeningBox(boxId);
-    socket.emit('openMysteryBox', { lightningAddress, boxId });
+  const fetchBoxes = async () => {
+    try {
+      setLoading(true);
+      const response = await fetch(`${BACKEND_URL}/api/mystery-boxes/${lightningAddress}`);
+      const data = await response.json();
+      setBoxes(data.boxes || []);
+    } catch (error) {
+      console.error('Failed to fetch mystery boxes:', error);
+    } finally {
+      setLoading(false);
+    }
   };
 
-  const getBoxIcon = (boxType) => {
-    switch (boxType) {
-      case 'BASIC': return '📦';
-      case 'SILVER': return '🎁';
-      case 'GOLD': return '✨';
-      case 'LEGENDARY': return '🏆';
+  const fetchStats = async () => {
+    try {
+      const response = await fetch(`${BACKEND_URL}/api/mystery-boxes/stats/${lightningAddress}`);
+      const data = await response.json();
+      setStats(data.stats || null);
+    } catch (error) {
+      console.error('Failed to fetch mystery box stats:', error);
+    }
+  };
+
+  const openBox = async (boxId) => {
+    try {
+      setOpeningBox(boxId);
+      const response = await fetch(`${BACKEND_URL}/api/mystery-boxes/open`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ lightningAddress, boxId })
+      });
+      const data = await response.json();
+      
+      if (data.success) {
+        setLastReward(data.reward);
+        await fetchBoxes();
+        await fetchStats();
+      }
+    } catch (error) {
+      console.error('Failed to open mystery box:', error);
+    } finally {
+      setOpeningBox(null);
+    }
+  };
+
+  const getDailyBox = async () => {
+    try {
+      setLoading(true);
+      const response = await fetch(`${BACKEND_URL}/api/mystery-boxes/daily/${lightningAddress}`, {
+        method: 'POST'
+      });
+      const data = await response.json();
+      
+      if (data.success) {
+        await fetchBoxes();
+      }
+    } catch (error) {
+      console.error('Failed to get daily mystery box:', error);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const getBoxIcon = (type) => {
+    switch (type) {
+      case 'GOLD': return '🏆';
+      case 'SILVER': return '🥈';
+      case 'BRONZE': return '🥉';
       default: return '📦';
     }
   };
 
-  const getBoxColor = (boxType) => {
-    switch (boxType) {
-      case 'BASIC': return '#6b7280';
-      case 'SILVER': return '#9ca3af';
-      case 'GOLD': return '#f59e0b';
-      case 'LEGENDARY': return '#8b5cf6';
-      default: return '#6b7280';
+  const getBoxColor = (type) => {
+    switch (type) {
+      case 'GOLD': return '#FFD700';
+      case 'SILVER': return '#C0C0C0';
+      case 'BRONZE': return '#CD7F32';
+      default: return '#666';
     }
   };
 
-  if (!isOpen) return null;
+  const unopenedBoxes = boxes.filter(box => !box.opened);
+  const openedBoxes = boxes.filter(box => box.opened);
 
   return (
-    <div className="modal-backdrop" onClick={onClose}>
-      <div className="mystery-boxes-modal" onClick={(e) => e.stopPropagation()}>
+    <div className="mystery-boxes-modal">
+      <div className="mystery-boxes-content">
         <div className="mystery-boxes-header">
           <h2>🎁 Mystery Boxes</h2>
           <button className="close-btn" onClick={onClose}>×</button>
         </div>
 
-        <div className="mystery-boxes-content">
-          {loading ? (
-            <div className="loading-state">
-              <div className="spinner"></div>
-              <p>Loading your mystery boxes...</p>
-            </div>
-          ) : mysteryBoxes.length === 0 ? (
-            <div className="empty-state">
-              <div className="empty-icon">📦</div>
-              <h3>No Mystery Boxes</h3>
-              <p>Keep playing to earn mystery boxes with amazing rewards!</p>
-              <div className="earning-tips">
-                <h4>Earn boxes by:</h4>
-                <ul>
-                  <li>🏆 Winning games</li>
-                  <li>🔥 Building win streaks</li>
-                  <li>⚡ Playing daily</li>
-                  <li>🎯 Completing achievements</li>
-                </ul>
-              </div>
-            </div>
-          ) : (
-            <div className="mystery-boxes-grid">
-              {mysteryBoxes.map((box) => (
-                <div 
-                  key={box.id} 
-                  className={`mystery-box ${box.type.toLowerCase()} ${openingBox === box.id ? 'opening' : ''}`}
-                  style={{ borderColor: getBoxColor(box.type) }}
-                >
-                  <div className="box-icon" style={{ color: getBoxColor(box.type) }}>
-                    {getBoxIcon(box.type)}
-                  </div>
-                  <div className="box-info">
-                    <h3>{box.type} Box</h3>
-                    <p className="box-reason">{box.reason}</p>
-                    <p className="box-date">
-                      Earned: {new Date(box.earned_at).toLocaleDateString()}
-                    </p>
-                  </div>
-                  <button
-                    className="open-box-btn"
-                    onClick={() => handleOpenBox(box.id)}
-                    disabled={openingBox === box.id}
-                    style={{ 
-                      backgroundColor: getBoxColor(box.type),
-                      opacity: openingBox === box.id ? 0.7 : 1 
-                    }}
-                  >
-                    {openingBox === box.id ? (
-                      <span className="opening-text">Opening...</span>
-                    ) : (
-                      'Open Box'
-                    )}
-                  </button>
-                </div>
-              ))}
-            </div>
-          )}
+        {lastReward && (
+          <div className="reward-notification">
+            <h3>🎉 Congratulations!</h3>
+            <p>You earned <span className="sats">{lastReward} SATS</span>!</p>
+            <button onClick={() => setLastReward(null)}>Awesome!</button>
+          </div>
+        )}
 
-          <div className="mystery-box-info">
-            <h3>💎 Box Types & Rewards</h3>
-            <div className="box-types-grid">
-              <div className="box-type-info basic">
-                <span className="type-icon">📦</span>
-                <div>
-                  <h4>Basic Box</h4>
-                  <p>5-25 sats, bonus rewards</p>
-                </div>
-              </div>
-              <div className="box-type-info silver">
-                <span className="type-icon">🎁</span>
-                <div>
-                  <h4>Silver Box</h4>
-                  <p>25-75 sats, premium rewards</p>
-                </div>
-              </div>
-              <div className="box-type-info gold">
-                <span className="type-icon">✨</span>
-                <div>
-                  <h4>Gold Box</h4>
-                  <p>75-200 sats, rare rewards</p>
-                </div>
-              </div>
-              <div className="box-type-info legendary">
-                <span className="type-icon">🏆</span>
-                <div>
-                  <h4>Legendary Box</h4>
-                  <p>200-500+ sats, legendary rewards</p>
-                </div>
-              </div>
+        {stats && (
+          <div className="mystery-stats">
+            <div className="stat-item">
+              <span>Total Opened:</span>
+              <span>{stats.totalOpened}</span>
+            </div>
+            <div className="stat-item">
+              <span>Total Earned:</span>
+              <span>{stats.totalEarned} SATS</span>
+            </div>
+            <div className="stat-item">
+              <span>Best Box:</span>
+              <span>{stats.bestReward} SATS</span>
             </div>
           </div>
+        )}
+
+        <div className="daily-box-section">
+          <button className="daily-box-btn" onClick={getDailyBox} disabled={loading}>
+            🎁 Get Daily Mystery Box
+          </button>
         </div>
+
+        {loading ? (
+          <div className="loading">Loading boxes...</div>
+        ) : (
+          <>
+            {unopenedBoxes.length > 0 && (
+              <div className="boxes-section">
+                <h3>Unopened Boxes ({unopenedBoxes.length})</h3>
+                <div className="boxes-grid">
+                  {unopenedBoxes.map(box => (
+                    <div 
+                      key={box.id} 
+                      className={`mystery-box ${box.type.toLowerCase()}`}
+                      style={{ borderColor: getBoxColor(box.type) }}
+                    >
+                      <div className="box-icon" style={{ color: getBoxColor(box.type) }}>
+                        {getBoxIcon(box.type)}
+                      </div>
+                      <div className="box-type">{box.type} Box</div>
+                      <div className="box-reason">From: {box.reason}</div>
+                      <button 
+                        className="open-box-btn"
+                        onClick={() => openBox(box.id)}
+                        disabled={openingBox === box.id}
+                      >
+                        {openingBox === box.id ? 'Opening...' : 'Open Box'}
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {openedBoxes.length > 0 && (
+              <div className="boxes-section">
+                <h3>Recently Opened</h3>
+                <div className="opened-boxes">
+                  {openedBoxes.slice(0, 5).map(box => (
+                    <div key={box.id} className="opened-box">
+                      <span className="box-icon">{getBoxIcon(box.type)}</span>
+                      <span className="box-type">{box.type}</span>
+                      <span className="box-reward">+{box.reward} SATS</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {boxes.length === 0 && (
+              <div className="no-boxes">
+                <p>No mystery boxes yet!</p>
+                <p>Win games to earn mystery boxes with SAT rewards!</p>
+              </div>
+            )}
+          </>
+        )}
       </div>
     </div>
   );
-};
-
-export default MysteryBoxes;
+}

@@ -1,256 +1,214 @@
 import React, { useState, useEffect } from 'react';
-import './LeaderboardSystem.css';
 
-const LeaderboardSystem = ({ lightningAddress, isOpen, onClose }) => {
+const BACKEND_URL = process.env.REACT_APP_BACKEND_URL || 'http://localhost:4000';
+
+export default function LeaderboardSystem({ lightningAddress, onClose }) {
+  const [activeTab, setActiveTab] = useState('profit');
   const [leaderboards, setLeaderboards] = useState({});
-  const [currentBoard, setCurrentBoard] = useState('profit');
-  const [currentPeriod, setCurrentPeriod] = useState('all');
-  const [playerRank, setPlayerRank] = useState(null);
   const [loading, setLoading] = useState(true);
-
-  const boardTypes = [
-    { id: 'profit', name: 'Top Earners', icon: '💰', desc: 'Highest net profit' },
-    { id: 'wins', name: 'Most Wins', icon: '🏆', desc: 'Total victories' },
-    { id: 'winrate', name: 'Win Rate', icon: '📊', desc: 'Best win percentage' },
-    { id: 'rank', name: 'Global Rank', icon: '👑', desc: 'Overall ranking' },
-    { id: 'games', name: 'Most Active', icon: '🎮', desc: 'Total games played' }
-  ];
-
-  const periods = [
-    { id: 'all', name: 'All Time', icon: '🌟' },
-    { id: 'season', name: 'This Season', icon: '📅' },
-    { id: 'weekly', name: 'This Week', icon: '📈' },
-    { id: 'daily', name: 'Today', icon: '⚡' }
-  ];
-
-  const streakBoards = [
-    { id: 'streaks', name: 'Win Streaks', icon: '🔥', desc: 'Current win streaks' }
-  ];
+  const [period, setPeriod] = useState('all');
+  const [userRank, setUserRank] = useState(null);
 
   useEffect(() => {
-    if (isOpen) {
-      fetchLeaderboard();
-      if (lightningAddress) {
-        fetchPlayerRank();
-      }
-    }
-  }, [isOpen, currentBoard, currentPeriod, lightningAddress]);
+    fetchLeaderboards();
+  }, [activeTab, period]);
 
-  const fetchLeaderboard = async () => {
+  const fetchLeaderboards = async () => {
     try {
       setLoading(true);
-      let endpoint;
-      
-      if (currentBoard === 'streaks') {
-        endpoint = '/api/leaderboards/streaks?limit=50';
-      } else {
-        endpoint = `/api/leaderboards?type=${currentBoard}&period=${currentPeriod}&limit=50`;
-      }
-      
-      const response = await fetch(endpoint);
+      const response = await fetch(`${BACKEND_URL}/api/leaderboards?type=${activeTab}&period=${period}&limit=50`);
       const data = await response.json();
       
       setLeaderboards(prev => ({
         ...prev,
-        [`${currentBoard}-${currentPeriod}`]: data
+        [activeTab]: data.leaderboard || []
       }));
-      setLoading(false);
+
+      // Find user's rank
+      if (lightningAddress && data.leaderboard) {
+        const rank = data.leaderboard.findIndex(player => 
+          player.lightningAddress === lightningAddress || player.playerId === lightningAddress
+        );
+        setUserRank(rank >= 0 ? rank + 1 : null);
+      }
     } catch (error) {
-      console.error('Failed to fetch leaderboard:', error);
+      console.error('Failed to fetch leaderboards:', error);
+    } finally {
       setLoading(false);
     }
   };
 
-  const fetchPlayerRank = async () => {
+  const fetchStreakLeaderboard = async () => {
     try {
-      const response = await fetch(`/api/player-stats/${encodeURIComponent(lightningAddress)}`);
+      setLoading(true);
+      const response = await fetch(`${BACKEND_URL}/api/leaderboards/streaks?limit=50`);
       const data = await response.json();
-      setPlayerRank(data);
+      
+      setLeaderboards(prev => ({
+        ...prev,
+        streaks: data.leaderboard || []
+      }));
     } catch (error) {
-      console.error('Failed to fetch player rank:', error);
+      console.error('Failed to fetch streak leaderboard:', error);
+    } finally {
+      setLoading(false);
     }
   };
 
-  const getCurrentLeaderboard = () => {
-    return leaderboards[`${currentBoard}-${currentPeriod}`] || [];
+  const handleTabChange = (tab) => {
+    setActiveTab(tab);
+    if (tab === 'streaks') {
+      fetchStreakLeaderboard();
+    }
   };
 
-  const getRankDisplay = (index) => {
-    if (index === 0) return '🥇';
-    if (index === 1) return '🥈';
-    if (index === 2) return '🥉';
-    return `#${index + 1}`;
-  };
-
-  const getStatDisplay = (player, type) => {
+  const formatValue = (value, type) => {
     switch (type) {
       case 'profit':
-        return `${player.netProfit || player.profit || 0} sats`;
+      case 'satsEarned':
+        return `${value >= 0 ? '+' : ''}${value} SATS`;
       case 'wins':
-        return `${player.wins || 0} wins`;
+        return `${value} wins`;
       case 'winrate':
-        return `${player.winRate || 0}%`;
-      case 'rank':
-        return `${player.rankPoints || 1000} pts`;
-      case 'games':
-        return `${player.totalGames || player.games || 0} games`;
+        return `${value}%`;
       case 'streaks':
-        return `${player.currentStreak || 0} streak`;
+        return `${value} streak`;
       default:
-        return '';
+        return value;
     }
   };
 
-  const getPlayerPosition = () => {
-    const board = getCurrentLeaderboard();
-    const playerName = lightningAddress?.split('@')[0];
-    const position = board.findIndex(p => p.player === playerName);
-    return position >= 0 ? position + 1 : null;
+  const getRankIcon = (rank) => {
+    switch (rank) {
+      case 1: return '🏆';
+      case 2: return '🥈';
+      case 3: return '🥉';
+      default: return `#${rank}`;
+    }
   };
 
-  if (!isOpen) return null;
+  const getRankColor = (rank) => {
+    switch (rank) {
+      case 1: return '#FFD700';
+      case 2: return '#C0C0C0';
+      case 3: return '#CD7F32';
+      default: return '#666';
+    }
+  };
+
+  const currentLeaderboard = leaderboards[activeTab] || [];
+  const tabs = [
+    { id: 'profit', name: 'Profit', icon: '💰' },
+    { id: 'wins', name: 'Wins', icon: '🏆' },
+    { id: 'winrate', name: 'Win Rate', icon: '📈' },
+    { id: 'streaks', name: 'Streaks', icon: '🔥' }
+  ];
+
+  const periods = [
+    { id: 'all', name: 'All Time' },
+    { id: 'week', name: 'This Week' },
+    { id: 'month', name: 'This Month' }
+  ];
 
   return (
-    <div className="leaderboard-overlay">
-      <div className="leaderboard-modal">
+    <div className="leaderboard-modal">
+      <div className="leaderboard-content">
         <div className="leaderboard-header">
-          <div className="header-content">
-            <h2>🏆 Leaderboards</h2>
-            {playerRank && (
-              <div className="player-summary">
-                <span className="rank-info">Your Rank: #{playerRank.currentRank || '?'}</span>
-                <span className="points-info">{playerRank.rankPoints || 1000} pts</span>
+          <h2>🏆 Leaderboards</h2>
+          <button className="close-btn" onClick={onClose}>×</button>
+        </div>
+
+        <div className="leaderboard-tabs">
+          {tabs.map(tab => (
+            <button
+              key={tab.id}
+              className={`tab-btn ${activeTab === tab.id ? 'active' : ''}`}
+              onClick={() => handleTabChange(tab.id)}
+            >
+              <span className="tab-icon">{tab.icon}</span>
+              <span className="tab-name">{tab.name}</span>
+            </button>
+          ))}
+        </div>
+
+        {activeTab !== 'streaks' && (
+          <div className="period-selector">
+            {periods.map(p => (
+              <button
+                key={p.id}
+                className={`period-btn ${period === p.id ? 'active' : ''}`}
+                onClick={() => setPeriod(p.id)}
+              >
+                {p.name}
+              </button>
+            ))}
+          </div>
+        )}
+
+        {userRank && (
+          <div className="user-rank">
+            <span className="rank-icon">{getRankIcon(userRank)}</span>
+            <span>Your Rank: #{userRank}</span>
+          </div>
+        )}
+
+        {loading ? (
+          <div className="loading">Loading leaderboard...</div>
+        ) : (
+          <div className="leaderboard-list">
+            {currentLeaderboard.length > 0 ? (
+              <>
+                <div className="leaderboard-table">
+                  <div className="table-header">
+                    <span>Rank</span>
+                    <span>Player</span>
+                    <span>{tabs.find(t => t.id === activeTab)?.name}</span>
+                  </div>
+                  {currentLeaderboard.map((player, index) => {
+                    const rank = index + 1;
+                    const isCurrentUser = player.lightningAddress === lightningAddress || player.playerId === lightningAddress;
+                    
+                    return (
+                      <div 
+                        key={player.lightningAddress || player.playerId || index} 
+                        className={`table-row ${isCurrentUser ? 'current-user' : ''}`}
+                        style={{ borderLeft: `3px solid ${getRankColor(rank)}` }}
+                      >
+                        <span 
+                          className="rank-cell"
+                          style={{ color: getRankColor(rank) }}
+                        >
+                          {getRankIcon(rank)}
+                        </span>
+                        <span className="player-cell">
+                          <span className="player-name">
+                            {player.lightningAddress || player.playerId || `Player ${index + 1}`}
+                          </span>
+                          {isCurrentUser && <span className="you-indicator">(You)</span>}
+                        </span>
+                        <span className="score-cell">
+                          {formatValue(player.score, activeTab)}
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
+
+                {currentLeaderboard.length === 50 && (
+                  <div className="load-more">
+                    <p>Showing top 50 players</p>
+                  </div>
+                )}
+              </>
+            ) : (
+              <div className="no-data">
+                <p>No leaderboard data yet!</p>
+                <p>Play some games to see rankings!</p>
               </div>
             )}
           </div>
-          <button className="close-btn" onClick={onClose}>✕</button>
-        </div>
-
-        <div className="board-controls">
-          <div className="board-types">
-            {boardTypes.map(type => (
-              <button
-                key={type.id}
-                className={`board-btn ${currentBoard === type.id ? 'active' : ''}`}
-                onClick={() => setCurrentBoard(type.id)}
-                title={type.desc}
-              >
-                <span className="board-icon">{type.icon}</span>
-                <span className="board-name">{type.name}</span>
-              </button>
-            ))}
-            {streakBoards.map(type => (
-              <button
-                key={type.id}
-                className={`board-btn ${currentBoard === type.id ? 'active' : ''}`}
-                onClick={() => setCurrentBoard(type.id)}
-                title={type.desc}
-              >
-                <span className="board-icon">{type.icon}</span>
-                <span className="board-name">{type.name}</span>
-              </button>
-            ))}
-          </div>
-
-          {currentBoard !== 'streaks' && (
-            <div className="period-controls">
-              {periods.map(period => (
-                <button
-                  key={period.id}
-                  className={`period-btn ${currentPeriod === period.id ? 'active' : ''}`}
-                  onClick={() => setCurrentPeriod(period.id)}
-                >
-                  <span className="period-icon">{period.icon}</span>
-                  <span className="period-name">{period.name}</span>
-                </button>
-              ))}
-            </div>
-          )}
-        </div>
-
-        <div className="leaderboard-content">
-          {loading ? (
-            <div className="loading-state">
-              <div className="loading-spinner"></div>
-              <p>Loading leaderboard...</p>
-            </div>
-          ) : (
-            <>
-              {getPlayerPosition() && (
-                <div className="player-position">
-                  <div className="position-card">
-                    <span className="position-rank">{getRankDisplay(getPlayerPosition() - 1)}</span>
-                    <div className="position-info">
-                      <span className="position-name">Your Position</span>
-                      <span className="position-stat">
-                        {getStatDisplay({ 
-                          [currentBoard]: playerRank?.[currentBoard] || 0 
-                        }, currentBoard)}
-                      </span>
-                    </div>
-                  </div>
-                </div>
-              )}
-
-              <div className="leaderboard-list">
-                {getCurrentLeaderboard().map((player, index) => (
-                  <div 
-                    key={player.player} 
-                    className={`leaderboard-entry ${index < 3 ? 'top-three' : ''} ${player.player === lightningAddress?.split('@')[0] ? 'current-player' : ''}`}
-                  >
-                    <div className="entry-rank">
-                      {getRankDisplay(index)}
-                    </div>
-                    <div className="entry-info">
-                      <div className="player-name">
-                        {player.player}
-                        {player.isTopPlayer && <span className="top-badge">👑</span>}
-                        {player.isActive && <span className="active-badge">🟢</span>}
-                      </div>
-                      <div className="player-stats">
-                        <span className="main-stat">
-                          {getStatDisplay(player, currentBoard)}
-                        </span>
-                        {currentBoard !== 'winrate' && player.winRate && (
-                          <span className="sub-stat">{player.winRate}% WR</span>
-                        )}
-                        {currentBoard !== 'games' && (player.totalGames || player.games) && (
-                          <span className="sub-stat">{player.totalGames || player.games} games</span>
-                        )}
-                      </div>
-                    </div>
-                    <div className="entry-badge">
-                      {index === 0 && <div className="champion-glow"></div>}
-                      {index < 10 && <div className="top-ten-badge">TOP {index + 1}</div>}
-                    </div>
-                  </div>
-                ))}
-
-                {getCurrentLeaderboard().length === 0 && (
-                  <div className="empty-board">
-                    <span className="empty-icon">📊</span>
-                    <h3>No data yet</h3>
-                    <p>Be the first to appear on this leaderboard!</p>
-                  </div>
-                )}
-              </div>
-            </>
-          )}
-        </div>
-
-        <div className="leaderboard-footer">
-          <div className="rewards-info">
-            <h4>🎁 Weekly Rewards</h4>
-            <div className="reward-tiers">
-              <span className="tier">🥇 Top 1: 1000 sats</span>
-              <span className="tier">🥈 Top 3: 500 sats</span>
-              <span className="tier">🥉 Top 10: 100 sats</span>
-            </div>
-          </div>
-        </div>
+        )}
       </div>
     </div>
   );
-};
-
-export default LeaderboardSystem;
+}

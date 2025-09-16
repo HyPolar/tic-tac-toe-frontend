@@ -23,7 +23,6 @@ const PAYOUTS = {
 const BET_OPTIONS = Object.keys(PAYOUTS).map(k => ({ amount: parseInt(k, 10), winnings: PAYOUTS[k].winner }));
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL || 'http://localhost:4000';
-const PAYMENT_TIMEOUT = 300; // 5 minutes like Sea Battle
 
 export default function App() {
   const [activeTab, setActiveTab] = useState('Menu');
@@ -44,14 +43,9 @@ export default function App() {
   const [lnurl, setLnurl] = useState('');
   const [addressLocked, setAddressLocked] = useState(false);
 
-  // Enhanced Payment state - Sea Battle style
-  const [paymentInfo, setPaymentInfo] = useState(null); // { invoiceId, lightningInvoice, hostedInvoiceUrl, speedInterfaceUrl, amountSats, amountUSD }
+  // Payment state
+  const [paymentInfo, setPaymentInfo] = useState(null); // { invoiceId, lightningInvoice, hostedInvoiceUrl, amountSats, amountUSD }
   const [isWaitingForPayment, setIsWaitingForPayment] = useState(false);
-  const [lightningInvoice, setLightningInvoice] = useState(null);
-  const [hostedInvoiceUrl, setHostedInvoiceUrl] = useState(null);
-  const [paymentTimer, setPaymentTimer] = useState(300); // 5 minutes like Sea Battle
-  const [payButtonLoading, setPayButtonLoading] = useState(false);
-  const paymentTimerRef = useRef(null);
 
   // Game state
   const [gameId, setGameId] = useState(null);
@@ -117,92 +111,131 @@ export default function App() {
   }, [history]);
 
   useEffect(() => {
-    if (!socket) {
-      const newSocket = io(BACKEND_URL);
-      setSocket(newSocket);
+    const s = io(BACKEND_URL, { transports: ['websocket', 'polling'] });
+    setSocket(s);
 
-      newSocket.on('connect', () => {
+    const handlers = {
+      connect: () => {
+        setSocketId(s.id);
         setConnected(true);
-        setSocketId(newSocket.id);
-      });
-
-      newSocket.on('disconnect', () => {
+      },
+      disconnect: () => {
         setConnected(false);
-        setIsWaitingForPayment(false);
-        setPayButtonLoading(false);
-        setLightningInvoice(null);
-        setHostedInvoiceUrl(null);
-      });
-
-      newSocket.on('error', (error) => {
+        setMessage('Disconnected. Retrying...');
+      },
+      connect_error: (err) => {
         setConnected(false);
-        setMessage(`Failed to connect to server: ${error.message}. Click Retry to try again.`);
-        setIsWaitingForPayment(false);
-        setPayButtonLoading(false);
-        setLightningInvoice(null);
-      });
-
-      newSocket.on('waitingForOpponent', (data) => {
-        setWaitingInfo(data);
-        setCurrentScreen('waiting');
-        setMessage('Waiting for opponent...');
-      });
-
-      // Enhanced payment handling - Sea Battle style
-      newSocket.on('paymentRequest', ({ lightningInvoice, hostedInvoiceUrl, speedInterfaceUrl, amountSats, amountUSD, invoiceId }) => {
-        setLightningInvoice(lightningInvoice);
-        setHostedInvoiceUrl(hostedInvoiceUrl || null);
-        setIsWaitingForPayment(true);
-        setPayButtonLoading(false);
-        setPaymentInfo({ 
-          amountUSD, 
-          amountSats,
-          invoiceId,
-          speedInterfaceUrl: speedInterfaceUrl || hostedInvoiceUrl
-        });
-        setPaymentTimer(PAYMENT_TIMEOUT);
+        setMessage(`Cannot reach server at ${BACKEND_URL}`);
+      },
+      error: (payload) => {
+        const msg = typeof payload === 'string' ? payload : (payload?.message || 'Error');
+        setMessage(msg);
+      },
+      paymentRequest: async ({ lightningInvoice, hostedInvoiceUrl, amountSats, amountUSD, invoiceId, speedInterfaceUrl }) => {
+        const data = { lightningInvoice, hostedInvoiceUrl, amountSats, amountUSD, invoiceId, speedInterfaceUrl };
+        setPaymentInfo(data);
+        setLnurl(lightningInvoice || hostedInvoiceUrl);
+        setQrCode('');
         setMessage(`Pay ${amountSats} SATS (~$${amountUSD})`);
+        setGameState('awaitingPayment');
         setCurrentScreen('payment');
-      });
+        setIsWaitingForPayment(true);
 
-      newSocket.on('paymentVerified', () => {
-        setIsWaitingForPayment(false);
-        setPayButtonLoading(false);
-        setPaymentTimer(PAYMENT_TIMEOUT);
-        setLightningInvoice(null);
-        setHostedInvoiceUrl(null);
-        setMessage('Payment verified! Preparing game...');
-      });
-
-      newSocket.on('message', (data) => {
-        setMessage(data);
-        const match = data.match(/wait time: (\d+)-(\d+) seconds/);
-        if (match) {
-          const minWait = parseInt(match[1]);
-          const maxWait = parseInt(match[2]);
-          const estimatedWait = Math.floor((minWait + maxWait) / 2);
-          setWaitingInfo({ minWait, maxWait, estimatedWait });
-          // Start countdown from max wait time
-          setWaitingSecondsLeft(maxWait);
-          
-          if (waitingIntervalRef.current) { 
-            clearInterval(waitingIntervalRef.current); 
+        // Generate QR code for Lightning invoice
+        if (lightningInvoice) {
+          try {
+            const response = await fetch(`${BACKEND_URL}/api/generate-qr`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ invoice: lightningInvoice })
+            });
+            const qrData = await response.json();
+            if (qrData.qr) {
+              setQrCode(qrData.qr);
+            }
+          } catch (error) {
+            console.error('Failed to generate QR code:', error);
           }
-          
-          const startTime = Date.now();
-          waitingIntervalRef.current = setInterval(() => {
-            const elapsed = Math.floor((Date.now() - startTime) / 1000);
-            const remaining = Math.max(0, maxWait - elapsed);
-            setWaitingSecondsLeft(remaining);
-          }, 1000);
+        }
+
+        // Store Speed interface URL if available
+        if (speedInterfaceUrl) {
+          localStorage.setItem('speedInterfaceUrl', speedInterfaceUrl);
+        }
+      },
+      payment_sent: ({ amount, status, txId }) => {
+        setMessage(`Payout sent: ${amount} SATS${txId ? ` (tx: ${txId})` : ''}`);
+      },
+      payment_error: ({ error }) => {
+        setMessage(`Payout error: ${error || 'Unknown error'}`);
+      },
+      paymentVerified: () => {
+        setIsWaitingForPayment(false);
+        setMessage('Payment verified! Waiting for opponent...');
+        setGameState('waiting');
+        setCurrentScreen('waiting');
+      },
+      paymentTimeout: ({ message }) => {
+        // Stop waiting and prompt user to retry
+        setIsWaitingForPayment(false);
+        setPaymentInfo(null);
+        setMessage(message || 'Payment verification timed out. Please try again.');
+        setGameState('splash');
+        setCurrentScreen('start');
+        setWaitingInfo(null);
+        setWaitingSecondsLeft(null);
+        setMatchInfo(null);
+        setMatchSecondsLeft(null);
+        setAddressLocked(false);
+        if (waitingIntervalRef.current) { clearInterval(waitingIntervalRef.current); waitingIntervalRef.current = null; }
+        if (matchIntervalRef.current) { clearInterval(matchIntervalRef.current); matchIntervalRef.current = null; }
+      },
+      paymentStatus: ({ status, message }) => {
+        console.log('Payment status:', status, message);
+        if (status === 'pending' || status === 'unpaid') {
+          setMessage('Payment pending... Please complete the payment');
+        } else if (status === 'error') {
+          setMessage(`Payment check error: ${message || 'Unknown error'}`);
+        }
+      },
+      transaction: ({ message }) => {
+        setMessage(message);
+      },
+      waitingForOpponent: (payload) => {
+        // Start waiting countdown until potential bot spawn or human arrival
+        const { message, estimatedWait, playersInGame } = payload || {};
+        setGameState('waiting');
+        setCurrentScreen('waiting');
+        setMessage(message || 'Finding opponent...');
+        
+        // Parse estimated wait time (e.g., "13-25 seconds")
+        if (estimatedWait) {
+          const match = estimatedWait.match(/(\d+)-(\d+)/);
+          if (match) {
+            const minWait = parseInt(match[1]);
+            const maxWait = parseInt(match[2]);
+            setWaitingInfo({ minWait, maxWait, estimatedWait });
+            // Start countdown from max wait time
+            setWaitingSecondsLeft(maxWait);
+            
+            if (waitingIntervalRef.current) { 
+              clearInterval(waitingIntervalRef.current); 
+            }
+            
+            const startTime = Date.now();
+            waitingIntervalRef.current = setInterval(() => {
+              const elapsed = Math.floor((Date.now() - startTime) / 1000);
+              const remaining = Math.max(0, maxWait - elapsed);
+              setWaitingSecondsLeft(remaining);
+            }, 1000);
+          }
         } else {
           setWaitingInfo(null);
           setWaitingSecondsLeft(null);
         }
         setMatchInfo(null);
-      });
-
-      newSocket.on('matchFound', ({ opponent, startsIn, startAt }) => {
+      },
+      matchFound: ({ opponent, startsIn, startAt }) => {
         // Switch to pre-game countdown
         if (waitingIntervalRef.current) { clearInterval(waitingIntervalRef.current); waitingIntervalRef.current = null; }
         setWaitingInfo(null);
@@ -221,9 +254,8 @@ export default function App() {
         };
         tick();
         matchIntervalRef.current = setInterval(tick, 250);
-      });
-
-      newSocket.on('startGame', ({ gameId, symbol, turn, message, turnDeadline }) => {
+      },
+      startGame: ({ gameId, symbol, turn, message, turnDeadline }) => {
         // Clear waiting/match timers on actual game start
         if (waitingIntervalRef.current) { clearInterval(waitingIntervalRef.current); waitingIntervalRef.current = null; }
         if (matchIntervalRef.current) { clearInterval(matchIntervalRef.current); matchIntervalRef.current = null; }
@@ -243,33 +275,29 @@ export default function App() {
         setGameState('playing');
         setCurrentScreen('game');
         setShowStartModal(false);
-        setMessage(message || (turn === socketId ? 'Your move' : "Opponent's move"));
-      });
-
-      newSocket.on('boardUpdate', ({ board, lastMove }) => {
+        setMessage(message || (turn === s.id ? 'Your move' : "Opponent's move"));
+      },
+      boardUpdate: ({ board, lastMove }) => {
         setBoard(board);
         setLastMove(typeof lastMove === 'number' ? lastMove : null);
-      });
-
-      newSocket.on('moveMade', ({ position, symbol, nextTurn, board, turnDeadline, message }) => {
+      },
+      moveMade: ({ position, symbol, nextTurn, board, turnDeadline, message }) => {
         setBoard(board);
         setLastMove(position);
         setTurn(nextTurn);
         setTurnDeadline(turnDeadline || null);
         const ttl = turnDeadline ? Math.max(1, Math.ceil((Number(turnDeadline) - Date.now()) / 1000)) : null;
         setTurnDuration(ttl);
-        setMessage(message || (nextTurn === socketId ? 'Your move' : "Opponent's move"));
-      });
-
-      newSocket.on('nextTurn', ({ turn, turnDeadline, message }) => {
+        setMessage(message || (nextTurn === s.id ? 'Your move' : "Opponent's move"));
+      },
+      nextTurn: ({ turn, turnDeadline, message }) => {
         setTurn(turn);
         setTurnDeadline(turnDeadline || null);
         const ttl = turnDeadline ? Math.max(1, Math.ceil((Number(turnDeadline) - Date.now()) / 1000)) : null;
         setTurnDuration(ttl);
-        setMessage(message || (turn === socketId ? 'Your move' : "Opponent's move"));
-      });
-
-      newSocket.on('gameEnd', ({ message, winnerSymbol, winningLine, streakBonus: bonus }) => {
+        setMessage(message || (turn === s.id ? 'Your move' : "Opponent's move"));
+      },
+      gameEnd: ({ message, winnerSymbol, winningLine, streakBonus: bonus }) => {
         setGameState('finished');
         setMessage(message);
         setWinningLine(Array.isArray(winningLine) ? winningLine : null);
@@ -302,30 +330,30 @@ export default function App() {
           sfxPlay('lose');
           triggerHaptic([15, 25]);
         }
-      });
-
+      },
       // New addictive features events
-      newSocket.on('newAchievement', ({ achievement, reward }) => {
+      newAchievement: ({ achievement, reward }) => {
         setNewAchievement({ achievement, reward });
         setTimeout(() => setNewAchievement(null), 5000);
-      });
-
-      newSocket.on('mysteryBoxAwarded', ({ boxType, reason }) => {
+      },
+      mysteryBoxAwarded: ({ boxType, reason }) => {
         setNewMysteryBox({ boxType, reason });
         setTimeout(() => setNewMysteryBox(null), 5000);
-      });
-
-      newSocket.on('playerStatsUpdate', ({ sats, stats }) => {
+      },
+      playerStatsUpdate: ({ sats, stats }) => {
         setPlayerSats(sats || 0);
-      });
+      },
+    };
 
-      return () => {
-        newSocket.disconnect();
-        if (paymentTimerRef.current) {
-          clearTimeout(paymentTimerRef.current);
-        }
-      };
+    for (const [event, handler] of Object.entries(handlers)) {
+      s.on(event, handler);
     }
+    s.connect();
+
+    return () => {
+      Object.entries(handlers).forEach(([evt, fn]) => s.off(evt, fn));
+      s.disconnect();
+    };
   }, []);
 
   // Update payout when bet changes
@@ -333,28 +361,6 @@ export default function App() {
     const opt = BET_OPTIONS.find(o => o.amount === parseInt(betAmount, 10));
     setPayoutAmount(String(opt?.winnings || 0));
   }, [betAmount]);
-
-  // Payment timer effect - Sea Battle style
-  useEffect(() => {
-    if (isWaitingForPayment && paymentTimer > 0) {
-      paymentTimerRef.current = setTimeout(() => {
-        setPaymentTimer(paymentTimer - 1);
-      }, 1000);
-    } else if (isWaitingForPayment && paymentTimer === 0) {
-      setIsWaitingForPayment(false);
-      setPayButtonLoading(false);
-      setMessage('Payment timed out after 5 minutes. Click Retry to try again.');
-      setLightningInvoice(null);
-      setHostedInvoiceUrl(null);
-      setPaymentInfo(null);
-      socket?.emit('cancelGame', { gameId, socketId });
-    }
-    return () => {
-      if (paymentTimerRef.current) {
-        clearTimeout(paymentTimerRef.current);
-      }
-    };
-  }, [isWaitingForPayment, paymentTimer, gameId, socketId, socket]);
 
   // Persist toggles
   useEffect(() => {
@@ -404,138 +410,225 @@ export default function App() {
 
     // Emit join game event
     console.log('Emitting joinGame event');
-    socket?.emit('joinGame', { lightningAddress: addr, betAmount: parseInt(betAmount, 10), acctId });
-    setPayButtonLoading(true);
+    socket.emit('joinGame', {
+      lightningAddress,
+      betAmount: parseInt(betAmount, 10)
+    });
 
     setMessage('Joining game...');
     setAddressLocked(true);
   };
 
-  // Sea Battle style payment URL opener
-  const openPaymentUrlSafely = (url) => {
+  // Autofill Lightning username from URL (#p_add=user@speed.app or ?p_add=)
+  useEffect(() => {
+    const urlParams = new URLSearchParams(window.location.search);
+    const hashParams = new URLSearchParams(window.location.hash.slice(1));
+    const pAdd = urlParams.get('p_add') || hashParams.get('p_add');
+    if (pAdd && !lightningAddress) {
+      setLightningAddress(pAdd);
+    }
+  }, [lightningAddress]);
+
+  // Game timer for turn countdown
+  useEffect(() => {
+    if (!turnDeadline) {
+      setTimeLeft(null);
+      return;
+    }
+    const updateTimer = () => {
+      const remaining = Math.max(0, Math.ceil((Number(turnDeadline) - Date.now()) / 1000));
+      setTimeLeft(remaining);
+    };
+    updateTimer();
+    const interval = setInterval(updateTimer, 100);
+    return () => clearInterval(interval);
+  }, [turnDeadline]);
+
+  // Sound effects
+  const sfxPlay = (type) => {
+    if (!sfxEnabled) return;
     try {
-      const preWin = window.open('', '_blank', 'noopener,noreferrer');
-      if (preWin) {
-        preWin.location.href = url;
-        return true;
+      if (!audioCtxRef.current) {
+        audioCtxRef.current = new (window.AudioContext || window.webkitAudioContext)();
       }
-      return false;
-    } catch (e) {
-      try {
-        window.location.href = url;
-        return true;
-      } catch (e2) {
-        return false;
+      const ctx = audioCtxRef.current;
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      
+      if (type === 'click') {
+        osc.frequency.setValueAtTime(800, ctx.currentTime);
+        gain.gain.setValueAtTime(0.1, ctx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.1);
+      } else if (type === 'win') {
+        osc.frequency.setValueAtTime(523, ctx.currentTime);
+        osc.frequency.setValueAtTime(659, ctx.currentTime + 0.1);
+        osc.frequency.setValueAtTime(784, ctx.currentTime + 0.2);
+        gain.gain.setValueAtTime(0.2, ctx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.4);
+      } else if (type === 'lose') {
+        osc.frequency.setValueAtTime(300, ctx.currentTime);
+        osc.frequency.setValueAtTime(200, ctx.currentTime + 0.2);
+        gain.gain.setValueAtTime(0.15, ctx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.4);
       }
+      
+      osc.start(ctx.currentTime);
+      osc.stop(ctx.currentTime + (type === 'click' ? 0.1 : 0.4));
+    } catch (err) {
+      console.warn('Audio failed:', err);
     }
   };
 
-  // Sea Battle style payment handler
-  const handlePay = () => {
-    const paymentUrl = paymentInfo?.speedInterfaceUrl || hostedInvoiceUrl;
-    
-    if (paymentUrl) {
-      const opened = openPaymentUrlSafely(paymentUrl);
-      if (opened) {
-        setPayButtonLoading(true);
-      } else {
-        setPayButtonLoading(false);
-        setMessage('We could not open the payment page automatically. Please use the "Open Invoice" link below or scan the QR code.');
-      }
-    } else {
-      setMessage('No payment URL available. Please scan the QR code to pay.');
+  // Haptic feedback
+  const triggerHaptic = (pattern) => {
+    if (!hapticsEnabled || !navigator.vibrate) return;
+    try {
+      navigator.vibrate(pattern);
+    } catch (err) {
+      console.warn('Vibrate failed:', err);
     }
   };
 
-  // Sea Battle style cancel game handler
-  const handleCancelGame = () => {
-    if (socket) {
-      socket.emit('cancelGame', { gameId: gameId || null, socketId: socketId || null });
-    }
-    
-    if (paymentTimerRef.current) {
-      clearTimeout(paymentTimerRef.current);
-      paymentTimerRef.current = null;
-    }
-    
-    setGameState('menu');
-    setCurrentScreen('menu');
-    setMessage('Game canceled.');
-    setLightningInvoice(null);
-    setHostedInvoiceUrl(null);
-    setIsWaitingForPayment(false);
-    setPayButtonLoading(false);
-    setPaymentTimer(PAYMENT_TIMEOUT);
-    setPaymentInfo(null);
-  };
-
+  // Confetti animation
   const launchConfetti = () => {
-    if (confettiRef.current) {
-      const canvas = confettiRef.current;
-      const ctx = canvas.getContext('2d');
-      const particles = [];
-      
-      for (let i = 0; i < 50; i++) {
-        particles.push({
-          x: Math.random() * canvas.width,
-          y: Math.random() * canvas.height,
-          vx: (Math.random() - 0.5) * 4,
-          vy: (Math.random() - 0.5) * 4,
-          color: `hsl(${Math.random() * 360}, 70%, 60%)`,
-          life: 60
-        });
-      }
-      
-      const animate = () => {
-        ctx.clearRect(0, 0, canvas.width, canvas.height);
-        particles.forEach((p, i) => {
-          p.x += p.vx;
-          p.y += p.vy;
-          p.vy += 0.1;
-          p.life--;
-          ctx.fillStyle = p.color;
-          ctx.fillRect(p.x, p.y, 4, 4);
-          if (p.life <= 0) particles.splice(i, 1);
-        });
-        if (particles.length > 0) requestAnimationFrame(animate);
-      };
-      animate();
-    }
-  };
-
-  const resetToMenu = () => {
-    setCurrentScreen('menu');
-    setGameState('menu');
-    setMessage('');
-    setIsWaitingForPayment(false);
-    setPayButtonLoading(false);
-    setLightningInvoice(null);
-    setHostedInvoiceUrl(null);
-    setPaymentInfo(null);
-    setAddressLocked(false);
-  };
-
-  const copyPayment = () => {
-    if (lightningInvoice) {
-      navigator.clipboard.writeText(lightningInvoice);
-      setMessage('Payment request copied to clipboard!');
+    if (!confettiRef.current) return;
+    const colors = ['#f59e0b', '#10b981', '#3b82f6', '#ef4444', '#8b5cf6'];
+    for (let i = 0; i < 50; i++) {
+      const confetti = document.createElement('div');
+      confetti.className = 'confetti-piece';
+      confetti.style.background = colors[Math.floor(Math.random() * colors.length)];
+      confetti.style.left = Math.random() * 100 + '%';
+      confetti.style.animationDelay = Math.random() * 3 + 's';
+      confetti.style.animationDuration = (Math.random() * 3 + 2) + 's';
+      confettiRef.current.appendChild(confetti);
+      setTimeout(() => confetti.remove(), 5000);
     }
   };
 
   return (
-    <div className={`app ${theme}`}>
-      <canvas ref={confettiRef} className="confetti" />
-      
-      {currentScreen === 'menu' && (
-        <div className="menu-screen">
-          <h1>Lightning Tic-Tac-Toe</h1>
-          <button onClick={() => setCurrentScreen('start')}>Start Game</button>
-          <button onClick={() => setCurrentScreen('practice')}>Practice</button>
+    <div className={`app ${theme}`} ref={boardRef}>
+      <div className="header">
+        <div className="tabs">
+          {['Menu', 'History'].map(tab => (
+            <button
+              key={tab}
+              className={`tab ${activeTab === tab ? 'active' : ''}`}
+              onClick={() => {
+                setActiveTab(tab);
+                if (tab === 'History') {
+                  setCurrentScreen('history');
+                } else {
+                  setCurrentScreen('menu');
+                }
+              }}
+            >
+              {tab}
+            </button>
+          ))}
         </div>
-      )}
+      </div>
 
-      {currentScreen === 'practice' && (
-        <div className="practice-screen">
+      {activeTab === 'Menu' && currentScreen === 'menu' && (
+        <div className="panel">
+          <div className="main-header">
+            <h1>Tic‑Tac‑Toe</h1>
+            <p className="subtitle">Lightning ⚡ Multiplayer</p>
+          </div>
+          
+          {/* Player Stats Summary */}
+          {lightningAddress && (
+            <div className="player-summary">
+              <div className="stat-card">
+                <span className="stat-value">{playerSats?.toLocaleString() || 0}</span>
+                <span className="stat-label">Sats</span>
+              </div>
+              <div className="stat-card">
+                <span className="stat-value">{stats.wins}</span>
+                <span className="stat-label">Wins</span>
+              </div>
+              <div className="stat-card">
+                <span className="stat-value">{stats.winrate}%</span>
+                <span className="stat-label">Win Rate</span>
+              </div>
+              <div className="stat-card">
+                <span className="stat-value">{stats.streak}</span>
+                <span className="stat-label">Streak</span>
+              </div>
+            </div>
+          )}
+
+          {/* Main Action */}
+          <div className="main-action">
+            <button
+              className="neo-btn cta-main primary hero-btn"
+              onClick={() => {
+                console.log('Main menu Start Game clicked - currentScreen:', currentScreen);
+                console.log('Setting currentScreen to start');
+                setCurrentScreen('start');
+                console.log('currentScreen should now be start');
+              }}
+              disabled={gameState==='playing'}
+              aria-label={`Start Game — Win ${payoutAmount} SATS`}
+              style={{
+                position: 'relative',
+                zIndex: 9999,
+                pointerEvents: 'auto',
+                cursor: 'pointer'
+              }}
+            >
+              ⚡ Start Game
+              <small>Win {payoutAmount} SATS</small>
+            </button>
+          </div>
+
+          {/* Quick Features */}
+          <div className="quick-features">
+            <button 
+              className="feature-quick"
+              onClick={() => setShowAchievements(true)}
+              title="Achievements"
+            >
+              🏆
+              {newAchievement && <span className="notification-dot"></span>}
+            </button>
+            <button 
+              className="feature-quick"
+              onClick={() => setShowLeaderboards(true)}
+              title="Leaderboards"
+            >
+              📊
+            </button>
+            <button 
+              className="feature-quick"
+              onClick={() => setShowMysteryBoxes(true)}
+              title="Mystery Boxes"
+            >
+              🎁
+              {newMysteryBox && <span className="notification-dot"></span>}
+            </button>
+            <button 
+              className="feature-quick"
+              onClick={() => setShowSettings(true)}
+              title="Settings"
+            >
+              ⚙️
+            </button>
+          </div>
+
+          {/* Secondary Actions */}
+          <div className="secondary-actions">
+            <button
+              className="link-btn"
+              onClick={() => setShowHowToModal(true)}
+            >How to Play</button>
+            <button
+              className="link-btn"
+              onClick={() => setShowSupportModal(true)}
+            >Support</button>
+          </div>
+
           <PracticeBoard />
         </div>
       )}
@@ -548,7 +641,7 @@ export default function App() {
           setBetAmount={setBetAmount}
           acceptedTerms={acceptedTerms}
           setAcceptedTerms={setAcceptedTerms}
-          onStart={handleStartGame}
+          onStart={handleJoinGame}
           connected={connected}
           onOpenTerms={() => setShowTerms(true)}
           onOpenPrivacy={() => setShowPrivacy(true)}
@@ -558,64 +651,13 @@ export default function App() {
       )}
 
       {currentScreen === 'payment' && (
-        <div className="payment-screen">
-          <div className="payment-container">
-            <h2>Payment Required</h2>
-            <p className="payment-message">{message}</p>
-            
-            {isWaitingForPayment && (
-              <div className="payment-timer">
-                <p>Payment expires in: {Math.floor(paymentTimer / 60)}:{String(paymentTimer % 60).padStart(2, '0')}</p>
-              </div>
-            )}
-            
-            {lightningInvoice && (
-              <div className="payment-details">
-                <div className="qr-section">
-                  <QRCodeSVG value={lightningInvoice} size={200} />
-                </div>
-                
-                <div className="payment-buttons">
-                  <button 
-                    className="pay-button primary" 
-                    onClick={handlePay}
-                    disabled={payButtonLoading}
-                  >
-                    {payButtonLoading ? 'Opening...' : 'Pay with Lightning'}
-                  </button>
-                  
-                  {(paymentInfo?.speedInterfaceUrl || hostedInvoiceUrl) && (
-                    <a 
-                      href={paymentInfo?.speedInterfaceUrl || hostedInvoiceUrl}
-                      target="_blank" 
-                      rel="noopener noreferrer"
-                      className="invoice-link"
-                    >
-                      Open Invoice
-                    </a>
-                  )}
-                  
-                  <button className="copy-button secondary" onClick={copyPayment}>
-                    Copy Invoice
-                  </button>
-                </div>
-                
-                <div className="payment-info">
-                  {paymentInfo && (
-                    <>
-                      <p>Amount: {paymentInfo.amountSats} SATS</p>
-                      <p>~${paymentInfo.amountUSD} USD</p>
-                    </>
-                  )}
-                </div>
-              </div>
-            )}
-            
-            <button className="cancel-button" onClick={handleCancelGame}>
-              Cancel Game
-            </button>
-          </div>
-        </div>
+        <PaymentScreen
+          paymentInfo={paymentInfo}
+          message={message}
+          onCopyPayment={copyPayment}
+          onCancel={resetToMenu}
+          qrCode={qrCode}
+        />
       )}
 
       {currentScreen === 'waiting' && (
