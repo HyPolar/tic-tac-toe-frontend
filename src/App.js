@@ -65,7 +65,7 @@ export default function App() {
   const [showPrivacy, setShowPrivacy] = useState(false);
   const [theme, setTheme] = useState(() => {
     const saved = localStorage.getItem('ttt_theme');
-    return saved && saved !== 'neon' ? saved : 'simple';
+    return saved || 'blue'; // Default to blue theme instead of simple (green)
   });
   const [turnDuration, setTurnDuration] = useState(null); // seconds for current turn
   const confettiRef = useRef(null);
@@ -162,6 +162,25 @@ export default function App() {
         if (speedInterfaceUrl) {
           localStorage.setItem('speedInterfaceUrl', speedInterfaceUrl);
         }
+
+        // Start polling payment status for local testing (since webhooks don't work locally)
+        const pollInterval = setInterval(async () => {
+          try {
+            const response = await fetch(`${BACKEND_URL}/api/check-payment/${invoiceId}`);
+            const result = await response.json();
+            if (result.success && result.status === 'paid') {
+              clearInterval(pollInterval);
+              // Payment verified - this will trigger the paymentVerified socket event from backend
+            }
+          } catch (error) {
+            console.error('Payment polling error:', error);
+          }
+        }, 3000); // Check every 3 seconds
+
+        // Stop polling after 10 minutes
+        setTimeout(() => {
+          clearInterval(pollInterval);
+        }, 600000);
       },
       payment_sent: ({ amount, status, txId }) => {
         setMessage(`Payout sent: ${amount} SATS${txId ? ` (tx: ${txId})` : ''}`);
@@ -507,6 +526,66 @@ export default function App() {
     }
   };
 
+  // Copy payment invoice to clipboard
+  const copyPayment = () => {
+    if (!paymentInfo?.lightningInvoice) {
+      alert('No invoice available to copy');
+      return;
+    }
+    
+    try {
+      navigator.clipboard.writeText(paymentInfo.lightningInvoice).then(() => {
+        alert('Invoice copied to clipboard!');
+      }).catch(err => {
+        console.error('Failed to copy invoice:', err);
+        // Fallback for older browsers
+        const textArea = document.createElement('textarea');
+        textArea.value = paymentInfo.lightningInvoice;
+        document.body.appendChild(textArea);
+        textArea.select();
+        document.execCommand('copy');
+        document.body.removeChild(textArea);
+        alert('Invoice copied to clipboard!');
+      });
+    } catch (err) {
+      console.error('Copy failed:', err);
+      alert('Failed to copy invoice. Please copy manually.');
+    }
+  };
+
+  // Reset to menu and clean up game state
+  const resetToMenu = () => {
+    setCurrentScreen('menu');
+    setGameState('menu');
+    setPaymentInfo(null);
+    setIsWaitingForPayment(false);
+    setBoard(Array(9).fill(null));
+    setSymbol(null);
+    setOpponent(null);
+    setTurn(null);
+    setWinningLine(null);
+    setTurnDeadline(null);
+    setTimeLeft(null);
+    setMessage('');
+    setQrCode('');
+    setLnurl('');
+    
+    // Clear any intervals
+    if (waitingIntervalRef.current) {
+      clearInterval(waitingIntervalRef.current);
+      waitingIntervalRef.current = null;
+    }
+    if (matchIntervalRef.current) {
+      clearInterval(matchIntervalRef.current);
+      matchIntervalRef.current = null;
+    }
+    
+    setWaitingInfo(null);
+    setWaitingSecondsLeft(null);
+    setMatchInfo(null);
+    setMatchSecondsLeft(null);
+  };
+
   return (
     <div className={`app ${theme}`} ref={boardRef}>
       <div className="header">
@@ -647,6 +726,7 @@ export default function App() {
           onOpenPrivacy={() => setShowPrivacy(true)}
           addressLocked={addressLocked}
           noticeMessage={message}
+          onBack={() => setCurrentScreen('menu')}
         />
       )}
 

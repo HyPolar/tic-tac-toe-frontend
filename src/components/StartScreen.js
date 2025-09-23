@@ -21,10 +21,13 @@ export default function StartScreen({
   onOpenTerms,
   onOpenPrivacy,
   addressLocked = false,
-  noticeMessage
+  noticeMessage,
+  onBack
 }) {
   const payoutAmount = BET_OPTIONS.find(o => o.amount === parseInt(betAmount, 10))?.winnings || 0;
   const selectedBet = BET_OPTIONS.find(o => o.amount === parseInt(betAmount, 10));
+
+  console.log('StartScreen rendering with:', { connected, lightningAddress, betAmount });
 
   return (
     <div className="start-screen">
@@ -34,7 +37,7 @@ export default function StartScreen({
           <div className="start-header">
             <button 
               className="back-btn"
-              onClick={() => window.history.back()}
+              onClick={onBack}
               aria-label="Go back"
             >
               ← Back
