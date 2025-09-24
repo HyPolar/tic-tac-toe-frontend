@@ -1104,9 +1104,10 @@ export default function App() {
                       <li><strong>Objective:</strong> Get 3 in a row (horizontal, vertical, or diagonal) - kindergarten rules apply</li>
                       <li><strong>First Move:</strong> 8 seconds to think (use them wisely)</li>
                       <li><strong>Subsequent Moves:</strong> 5 seconds each (no pressure, just your money on the line)</li>
+                      <li><strong>Draw Handling:</strong> If game draws, opponent gets first turn in next game (5 seconds only)</li>
                       <li><strong>Timeout:</strong> Take too long = you forfeit your turn (tough love)</li>
                       <li><strong>Winning:</strong> Three in a row = victory dance time 🕺💃</li>
-                      <li><strong>Draw:</strong> Nobody wins = awkward silence</li>
+                      <li><strong>Draw:</strong> Nobody wins = game continues with opponent going first</li>
                     </ul>
                   </div>
                 </div>
@@ -1275,7 +1276,8 @@ export default function App() {
                   <li><strong>Game Type:</strong> Standard 3x3 Tic-Tac-Toe with monetary wagers using Bitcoin Lightning Network.</li>
                   <li><strong>Turn Timers:</strong> First move: 8 seconds maximum. Subsequent moves: 5 seconds maximum. Exceeding time limits forfeits your turn.</li>
                   <li><strong>Winning Conditions:</strong> First player to achieve three marks in a row (horizontal, vertical, or diagonal) wins.</li>
-                  <li><strong>Draw Games:</strong> If the board is full without a winner, the game is a draw and wagers are returned (minus any network fees).</li>
+                  <li><strong>Draw Games:</strong> If the board is full without a winner, the game is a draw and wagers are returned (minus any network fees). After a draw, opponent gets first turn in next game.</li>
+                  <li><strong>Draw Turn Priority:</strong> After any draw game, the opponent gets the first turn with 5 seconds (not 8 seconds).</li>
                   <li><strong>Game Integrity:</strong> All moves are recorded with timestamps. Games cannot be reversed once completed.</li>
                 </ul>
               </div>
