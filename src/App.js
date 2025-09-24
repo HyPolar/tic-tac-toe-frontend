@@ -50,6 +50,7 @@ export default function App() {
   // Game state
   const [gameId, setGameId] = useState(null);
   const [symbol, setSymbol] = useState(null); // 'X' | 'O'
+  const [opponent, setOpponent] = useState(null); // opponent info
   const [turn, setTurn] = useState(null); // socketId whose turn
   const [board, setBoard] = useState(Array(9).fill(null));
   const [message, setMessage] = useState('');
@@ -77,6 +78,12 @@ export default function App() {
   const audioCtxRef = useRef(null);
   const touchStartRef = useRef(null);
   const [acceptedTerms, setAcceptedTerms] = useState(false);
+
+  // Calculate turn progress for timer visualization
+  const turnProgress = useMemo(() => {
+    if (!turnDuration || !timeLeft) return 0;
+    return ((turnDuration - timeLeft) / turnDuration) * 100;
+  }, [turnDuration, timeLeft]);
   const [waitingInfo, setWaitingInfo] = useState(null); // { minWait, maxWait, estWaitSeconds, spawnAt }
   const waitingIntervalRef = useRef(null);
   const [waitingSecondsLeft, setWaitingSecondsLeft] = useState(null);
@@ -524,6 +531,98 @@ export default function App() {
       confettiRef.current.appendChild(confetti);
       setTimeout(() => confetti.remove(), 5000);
     }
+  };
+
+  // Handle cell click in game
+  const onCellClick = (index) => {
+    if (!socket || !connected) {
+      setMessage('Not connected to server');
+      return;
+    }
+    
+    if (gameState !== 'playing') {
+      setMessage('Game not active');
+      return;
+    }
+    
+    if (turn !== socketId) {
+      setMessage('Not your turn');
+      return;
+    }
+    
+    if (board[index] !== null) {
+      setMessage('Cell already taken');
+      return;
+    }
+    
+    // Play sound and haptics
+    sfxPlay('click');
+    triggerHaptic([10]);
+    
+    // Send move to server
+    socket.emit('makeMove', { gameId, position: index });
+  };
+
+  // Handle game resignation
+  const doResign = () => {
+    if (!socket || !connected) {
+      setMessage('Not connected to server');
+      return;
+    }
+    
+    if (gameState !== 'playing') {
+      setMessage('No active game to resign from');
+      return;
+    }
+    
+    if (confirm('Are you sure you want to resign? You will lose the game.')) {
+      socket.emit('resignGame', { gameId });
+      setMessage('You resigned from the game');
+    }
+  };
+
+  // Share game result
+  const shareResult = () => {
+    if (!gameId) return;
+    
+    const resultText = message.includes('You win') ? 'won' : message.includes('draw') ? 'drew' : 'lost';
+    const shareText = `I just ${resultText} a Lightning Network Tic-Tac-Toe game! ⚡️🎮`;
+    
+    if (navigator.share) {
+      navigator.share({
+        title: 'Lightning Tic-Tac-Toe Result',
+        text: shareText,
+        url: window.location.href
+      }).catch(err => console.log('Share failed:', err));
+    } else {
+      // Fallback - copy to clipboard
+      navigator.clipboard.writeText(shareText + ' ' + window.location.href)
+        .then(() => setMessage('Result copied to clipboard!'))
+        .catch(() => setMessage('Share failed'));
+    }
+  };
+
+  // Handle board pointer movement for 3D tilt effect
+  const handleBoardPointer = (e) => {
+    if (!tiltEnabled || !boardRef.current) return;
+    
+    const rect = boardRef.current.getBoundingClientRect();
+    const centerX = rect.left + rect.width / 2;
+    const centerY = rect.top + rect.height / 2;
+    
+    const deltaX = (e.clientX - centerX) / (rect.width / 2);
+    const deltaY = (e.clientY - centerY) / (rect.height / 2);
+    
+    const rotateX = deltaY * 10; // Max 10 degrees
+    const rotateY = deltaX * 10;
+    
+    boardRef.current.style.transform = `perspective(1000px) rotateX(${-rotateX}deg) rotateY(${rotateY}deg)`;
+  };
+
+  // Reset board tilt
+  const resetBoardTilt = () => {
+    if (!boardRef.current) return;
+    boardRef.current.style.transform = 'perspective(1000px) rotateX(0deg) rotateY(0deg)';
   };
 
   // Copy payment invoice to clipboard
