@@ -278,7 +278,7 @@ export default function App() {
         tick();
         matchIntervalRef.current = setInterval(tick, 250);
       },
-      startGame: ({ gameId, symbol, turn, message, turnDeadline }) => {
+      startGame: ({ gameId, symbol, turn, board, message, turnDeadline }) => {
         // Clear waiting/match timers on actual game start
         if (waitingIntervalRef.current) { clearInterval(waitingIntervalRef.current); waitingIntervalRef.current = null; }
         if (matchIntervalRef.current) { clearInterval(matchIntervalRef.current); matchIntervalRef.current = null; }
@@ -289,7 +289,7 @@ export default function App() {
         setGameId(gameId);
         setSymbol(symbol);
         setTurn(turn);
-        setBoard(Array(9).fill(null));
+        setBoard(board || Array(9).fill(null));
         setLastMove(null);
         setWinningLine(null);
         setTurnDeadline(turnDeadline || null);
