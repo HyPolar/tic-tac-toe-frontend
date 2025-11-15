@@ -340,6 +340,9 @@ export default function App() {
         if (autoContinue && isDraw) {
           setMessage(message);
           setWinningLine(null);
+          // Clear the board immediately to avoid showing stale data
+          setBoard(Array(9).fill(null));
+          setLastMove(null);
           // Don't set gameState to 'finished' - keep it playing so startGame can reset it
           // The startGame event will reset everything properly
           return; // Exit early, startGame will handle the reset
