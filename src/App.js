@@ -620,7 +620,7 @@ export default function App() {
     }
     
     if (confirm('Are you sure you want to resign? You will lose the game.')) {
-      socket.emit('resignGame', { gameId });
+      socket.emit('resign', { gameId });
       setMessage('You resigned from the game');
     }
   };
